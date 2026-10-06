@@ -1,0 +1,10 @@
+# 표 OCR 프로그램 의존성
+# PaddleOCR 3.x + PaddlePaddle(CPU) + 표 인식(paddlex[ocr]) + PDF/이미지/엑셀 처리
+
+paddlepaddle>=3.0.0
+paddleocr>=3.0.0
+paddlex[ocr]>=3.0.0     # 표 구조 인식 파이프라인에 필요
+pymupdf>=1.24.0
+pillow>=10.0.0
+numpy>=1.26.0
+openpyxl>=3.1.0         # 엑셀(.xlsx) 저장
