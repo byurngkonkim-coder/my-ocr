@@ -142,10 +142,33 @@ class TableEngine:
         self._pipe = None  # 지연 초기화
 
     def ensure_engine(self):
-        """파이프라인 준비 (최초 호출 시 모델 로드/다운로드)."""
+        """파이프라인 준비 (RapidTable ONNX 우선, 실패 시 PaddleOCR 폴백)."""
         if self._pipe is not None:
             return
+
+        # 1. 초경량·고속 RapidTable ONNX 파이프라인 우선 시도
+        try:
+            from rapid_table import RapidTable
+            from rapid_table.utils import RapidTableInput
+            from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
+
+            ocr_params = {}
+            if self.lang and self.lang.lower() in ("korean", "kor", "ko"):
+                ocr_params = {
+                    "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.lang_type": LangRec.KOREAN,
+                    "Rec.model_type": ModelType.MOBILE,
+                }
+            cfg = RapidTableInput(ocr_params=ocr_params if ocr_params else None)
+            self._pipe = RapidTable(cfg=cfg)
+            self._engine_type = "rapid_table"
+            return
+        except Exception:
+            pass
+
+        # 2. PaddleOCR 폴백
         from paddleocr import TableRecognitionPipelineV2
+        self._engine_type = "paddleocr"
 
         kwargs = dict(
             use_doc_orientation_classify=False,
@@ -203,6 +226,18 @@ class TableEngine:
     def _recognize(self, image_rgb: np.ndarray) -> list[list[list[str]]]:
         self.ensure_engine()
         image_rgb = _upscale_if_small(image_rgb)   # 저해상도 표는 셀 검출이 어긋나므로 확대
+
+        # RapidTable ONNX 처리
+        if getattr(self, "_engine_type", "") == "rapid_table":
+            res = self._pipe(image_rgb)
+            tables: list[list[list[str]]] = []
+            for html in (getattr(res, "pred_htmls", None) or []):
+                if html:
+                    grid = html_table_to_grid(html)
+                    if grid:
+                        tables.append(grid)
+            return tables
+
         image_bgr = np.ascontiguousarray(image_rgb[:, :, ::-1])  # RGB -> BGR
         output = self._pipe.predict(image_bgr)
 

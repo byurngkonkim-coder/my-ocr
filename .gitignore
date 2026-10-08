@@ -7,6 +7,8 @@ __pycache__/
 *.log
 venv/
 .venv/
+engine/venv/
+_백업/move_log_*.tsv
+결과/
 # 사원 이미지 테스트 자료 — 개인정보 가능성으로 제외
 test_member/
-

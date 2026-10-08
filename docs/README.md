@@ -61,19 +61,38 @@
 > **팁 (정확도 높이기)**: 표 선이 뚜렷하고 해상도가 높을수록 정확합니다.
 > 저해상도는 자동 확대되지만, 원본이 선명할수록 좋습니다.
 
-## 폴더 구성
+## 폴더 구성 (엔드유저 2계층 구조)
 
-| 파일 | 설명 |
-|------|------|
-| `ocr_app.py` | GUI 프로그램 본체 |
-| `table_engine.py` | 표 구조 인식 엔진 (PaddleOCR `TableRecognitionPipelineV2`) |
-| `ocr_engine.py` | 일반 텍스트 OCR 엔진 |
-| `exporters.py` | 엑셀/CSV/TSV 내보내기 |
-| `batch.py` | 폴더 일괄 처리 로직 (탐색·통합) |
-| `batch_folder.py` | 폴더 일괄 처리 CLI |
-| `batch_run.bat` | 폴더 끌어다 놓기용 일괄 실행 |
-| `install.bat` / `run.bat` | 설치 · 실행 스크립트 |
-| `test_table.png`, `test_batch/` | 테스트용 샘플 표 / 샘플 폴더 |
+```
+MyOCR/
+├── run.bat                 # GUI 프로그램 실행 (더블클릭)
+├── batch_run.bat           # 폴더 일괄 추출 실행 (폴더 드래그앤드롭 / 더블클릭)
+├── 결과/                   # 산출물 기본 저장 폴더 (CSV, Excel)
+│
+├── engine/                 # 내부 엔진 및 가상환경 격리
+│   ├── ocr_app.py          # GUI 애플리케이션
+│   ├── ocr_engine.py       # 텍스트 OCR 엔진 (RapidOCR 우선/PaddleOCR 폴백)
+│   ├── table_engine.py     # 표 구조 인식 엔진 (RapidTable/SLANet-Plus)
+│   ├── uth_fixed_engine.py # 고정 레이아웃 전용 엔진
+│   ├── korean_corrector.py # 한글 맞춤법/띄어쓰기 정제 모듈
+│   ├── batch_folder.py     # 폴더 일괄 처리 CLI
+│   ├── batch.py            # 일괄 처리 모듈 (헤더 병합)
+│   ├── exporters.py        # 엑셀/CSV/TSV 저장 모듈
+│   ├── install.bat         # 가상환경 구축 스크립트
+│   ├── requirements.txt    # 패키지 의존성 명세
+│   ├── tests/              # 회귀 테스트 스크립트
+│   └── venv/               # 독립 가상환경
+│
+├── docs/                   # 사용자 가이드 및 지침 문서
+│   ├── README.md
+│   └── README.zip
+│
+├── samples/                # 테스트용 샘플 이미지
+│   ├── test_batch/
+│   └── test_table.png
+│
+└── _백업/                  # 이동 기록(move_log) 및 원본 보존
+```
 
 ## 문제 해결
 

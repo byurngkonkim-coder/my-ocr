@@ -25,57 +25,88 @@ class OCREngine:
     def __init__(self, lang: str = "korean"):
         self.lang = lang
         self._ocr = None  # 지연 초기화 (첫 OCR 때 모델 로드)
+        self._engine_type = ""
 
     # ------------------------------------------------------------------ #
     # 엔진 초기화
     # ------------------------------------------------------------------ #
     def ensure_engine(self):
-        """PaddleOCR 객체를 준비한다. 최초 호출 시 모델을 로드/다운로드한다."""
+        """OCR 엔진을 준비한다. ONNX Runtime 기반 RapidOCR을 우선 사용하고 실패 시 PaddleOCR로 폴백한다."""
         if self._ocr is not None:
             return
-        from paddleocr import PaddleOCR
 
-        # PaddleOCR 3.x 파라미터로 먼저 시도, 안 되면 구버전 파라미터로 폴백
+        # 1. 고성능·경량 ONNX Runtime 기반 RapidOCR 우선 시도
+        try:
+            from rapidocr import RapidOCR
+            from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
+
+            params = {}
+            if self.lang and self.lang.lower() in ("korean", "kor", "ko"):
+                params = {
+                    "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.lang_type": LangRec.KOREAN,
+                    "Rec.model_type": ModelType.MOBILE,
+                }
+            self._ocr = RapidOCR(params=params if params else None)
+            self._engine_type = "rapidocr"
+            return
+        except Exception:
+            pass
+
+        # 2. PaddleOCR 폴백
+        from paddleocr import PaddleOCR
+        self._engine_type = "paddleocr"
         try:
             self._ocr = PaddleOCR(
                 lang=self.lang,
-                use_textline_orientation=False,    # 캡처/스캔 텍스트는 수평이라 방향분류 OFF
-                                                   # (True면 일부 줄을 180° 오분류해 뒤집힘/노이즈 발생)
-                use_doc_orientation_classify=False,  # 무거운 전처리 모델은 끔
+                use_textline_orientation=False,
+                use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
-                enable_mkldnn=False,  # paddlepaddle 3.x oneDNN(PIR) 버그 회피 (필수)
+                enable_mkldnn=False,
             )
             return
         except TypeError:
             pass
 
-        try:  # 2.x 계열
+        try:
             self._ocr = PaddleOCR(lang=self.lang, use_angle_cls=True)
             return
         except TypeError:
             pass
 
-        # 최소 파라미터
         self._ocr = PaddleOCR(lang=self.lang)
 
     # ------------------------------------------------------------------ #
     # 공개 API
     # ------------------------------------------------------------------ #
-    def ocr_image_file(self, path: str):
+    @staticmethod
+    def _refine_lines(lines: list[tuple[str, float | None]]) -> list[tuple[str, float | None]]:
+        try:
+            from korean_corrector import refine_korean_text
+            return [(refine_korean_text(text), score) for text, score in lines]
+        except Exception:
+            return lines
+
+    def ocr_image_file(self, path: str, refine: bool = True):
         """이미지 파일 경로 -> [(text, score), ...]"""
         with Image.open(path) as im:
             rgb = np.array(im.convert("RGB"))
-        return self._run(rgb)
+        lines = self._run(rgb)
+        return self._refine_lines(lines) if refine else lines
 
-    def ocr_pil(self, pil_image: Image.Image):
+    def ocr_pil(self, pil_image: Image.Image, refine: bool = True):
         """PIL 이미지 -> [(text, score), ...]"""
         rgb = np.array(pil_image.convert("RGB"))
-        return self._run(rgb)
+        lines = self._run(rgb)
+        return self._refine_lines(lines) if refine else lines
 
-    def ocr_pdf(self, path: str, dpi: int = 200, progress_cb=None):
+    def ocr_pdf(self, path: str, dpi: int = 200, progress_cb=None, force_ocr: bool = False, refine: bool = True):
         """PDF 파일 -> 페이지별 [[(text, score), ...], ...]
 
         progress_cb(current_page, total_pages) 콜백으로 진행 상황을 알린다.
+        force_ocr=False이면 텍스트 레이어가 있는 디지털 PDF 페이지는 OCR 없이
+        PyMuPDF 내장 텍스트를 즉시 반환하여 불필요한 연산과 지연을 방지한다.
+        refine=True이면 한국어 띄어쓰기, 맞춤법 및 OCR 노이즈 정제 규칙을 자동 적용한다.
         """
         if not _HAS_FITZ:
             raise RuntimeError(
@@ -89,11 +120,32 @@ class OCREngine:
             pages = []
             for i in range(total):
                 page = doc.load_page(i)
+
+                # 디지털 텍스트 레이어 존재 여부 확인 (Bypass 필터)
+                if not force_ocr:
+                    raw_text = page.get_text("text").strip()
+                    if len("".join(raw_text.split())) >= 20:
+                        lines = []
+                        for line in raw_text.splitlines():
+                            l_str = line.strip()
+                            if l_str:
+                                lines.append((l_str, 1.0))
+                        if refine:
+                            lines = self._refine_lines(lines)
+                        pages.append(lines)
+                        if progress_cb:
+                            progress_cb(i + 1, total)
+                        continue
+
+                # 텍스트 레이어가 없는 스캔 페이지는 이미지 렌더링 후 OCR 실행
                 pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB, alpha=False)
                 rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                     pix.height, pix.width, 3
                 )
-                pages.append(self._run(np.ascontiguousarray(rgb)))
+                page_lines = self._run(np.ascontiguousarray(rgb))
+                if refine:
+                    page_lines = self._refine_lines(page_lines)
+                pages.append(page_lines)
                 if progress_cb:
                     progress_cb(i + 1, total)
             return pages
@@ -106,6 +158,18 @@ class OCREngine:
     def _run(self, image_rgb: np.ndarray):
         """RGB numpy 이미지를 받아 [(text, score), ...] 반환."""
         self.ensure_engine()
+        if getattr(self, "_engine_type", "") == "rapidocr":
+            out = self._ocr(image_rgb)
+            lines = []
+            if out is not None and getattr(out, "txts", None):
+                txts = out.txts or ()
+                scores = out.scores or ()
+                for idx, text in enumerate(txts):
+                    if text and str(text).strip():
+                        s = _to_float(scores[idx]) if idx < len(scores) else 1.0
+                        lines.append((str(text).strip(), s))
+            return lines
+
         # PaddleOCR(내부 OpenCV)은 BGR 순서를 기대하므로 채널 변환
         image_bgr = np.ascontiguousarray(image_rgb[:, :, ::-1])
 

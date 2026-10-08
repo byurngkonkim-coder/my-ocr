@@ -1,0 +1,15 @@
+# MyOCR - 고성능/경량 표 및 텍스트 OCR 의존성
+# 기본 권장: ONNX Runtime 기반 초고속 엔진 (CPU 최적화, 저메모리)
+
+onnxruntime>=1.20.0
+rapidocr>=3.9.0
+rapid_table>=3.0.0
+pymupdf>=1.24.0
+pillow>=10.0.0
+numpy>=1.26.0
+openpyxl>=3.1.0         # 엑셀(.xlsx) 저장
+
+# 선택/레거시 폴백 (PaddleOCR 엔진을 직접 사용하려는 경우에만 설치)
+# paddlepaddle>=3.0.0
+# paddleocr>=3.0.0
+# paddlex[ocr]>=3.0.0

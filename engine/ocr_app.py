@@ -9,10 +9,15 @@
 from __future__ import annotations
 
 import os
+import sys
 import queue
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from PIL import Image, ImageTk
 
@@ -510,12 +515,22 @@ class TableOCRApp:
         self._to_clipboard(exporters.grid_to_tsv(item[1]))
         self.status_var.set(f"'{item[0]}'을(를) 표 형식(TSV)으로 복사했습니다. 엑셀에 붙여넣기 하세요.")
 
+    def _default_dir(self):
+        root_dir = os.path.abspath(os.path.join(_HERE, ".."))
+        res_dir = os.path.join(root_dir, "결과")
+        if os.path.isdir(res_dir):
+            return res_dir
+        if self.loaded_path and os.path.isfile(self.loaded_path):
+            return os.path.dirname(self.loaded_path)
+        return root_dir
+
     def export_xlsx(self):
         if not self.tables_data:
             messagebox.showinfo("알림", "먼저 표 추출을 실행하세요.")
             return
         path = filedialog.asksaveasfilename(
             title="엑셀로 저장", defaultextension=".xlsx",
+            initialdir=self._default_dir(),
             initialfile=self._default_name("xlsx"),
             filetypes=[("Excel 통합 문서", "*.xlsx")])
         if not path:
@@ -534,6 +549,7 @@ class TableOCRApp:
             return
         path = filedialog.asksaveasfilename(
             title="CSV로 저장 (현재 표)", defaultextension=".csv",
+            initialdir=self._default_dir(),
             initialfile=self._default_name("csv"),
             filetypes=[("CSV 파일", "*.csv")])
         if not path:

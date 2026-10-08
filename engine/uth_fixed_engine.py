@@ -58,11 +58,33 @@ class UTHFixedEngine:
     def __init__(self, lang: str = "korean"):
         self.lang = lang
         self._ocr = None
+        self._engine_type = ""
 
     def ensure_engine(self):
         if self._ocr is not None:
             return
+
+        # 1. 고성능·경량 ONNX Runtime 기반 RapidOCR 우선 시도
+        try:
+            from rapidocr import RapidOCR
+            from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
+
+            params = {}
+            if self.lang and self.lang.lower() in ("korean", "kor", "ko"):
+                params = {
+                    "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.lang_type": LangRec.KOREAN,
+                    "Rec.model_type": ModelType.MOBILE,
+                }
+            self._ocr = RapidOCR(params=params if params else None)
+            self._engine_type = "rapidocr"
+            return
+        except Exception:
+            pass
+
+        # 2. PaddleOCR 폴백
         from paddleocr import PaddleOCR
+        self._engine_type = "paddleocr"
 
         rec = LANG_REC_MODELS.get(self.lang)
         kwargs = dict(
@@ -112,6 +134,23 @@ class UTHFixedEngine:
     # ---------------- 내부 ---------------- #
     def _boxes(self, bgr, ox, oy):
         out = []
+        if getattr(self, "_engine_type", "") == "rapidocr":
+            res = self._ocr(bgr)
+            if res is not None and getattr(res, "boxes", None) is not None and getattr(res, "txts", None) is not None:
+                boxes = res.boxes
+                texts = res.txts
+                scores = getattr(res, "scores", None) or [1.0] * len(texts)
+                for i, t in enumerate(texts):
+                    b = np.array(boxes[i])
+                    if b.ndim == 1:
+                        x1, y1, x2, y2 = map(float, b[:4])
+                    else:
+                        x1, y1 = float(b[:, 0].min()), float(b[:, 1].min())
+                        x2, y2 = float(b[:, 0].max()), float(b[:, 1].max())
+                    sc = float(scores[i]) if i < len(scores) else 1.0
+                    out.append((str(t).strip(), (x1 + x2) / 2 + ox, (y1 + y2) / 2 + oy, sc))
+            return out
+
         for r in self._ocr.predict(bgr):
             texts, boxes, scores = r["rec_texts"], r["rec_boxes"], r["rec_scores"]
             for i, t in enumerate(texts):
