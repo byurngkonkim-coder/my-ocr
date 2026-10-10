@@ -11,7 +11,7 @@ echo [1/3] 가상환경(venv) 생성 중...
 python -m venv venv
 if errorlevel 1 (
   echo.
-  echo [오류] venv 생성 실패. Python 3.8~3.12가 설치되어 있는지 확인하세요.
+  echo [오류] venv 생성 실패. Python 3.10~3.12가 설치되어 있는지 확인하세요.
   echo   https://www.python.org/downloads/
   pause
   exit /b 1
