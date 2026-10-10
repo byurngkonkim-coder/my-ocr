@@ -21,10 +21,17 @@ if _HERE not in sys.path:
 
 from PIL import Image, ImageTk
 
+# 드래그앤드롭 (없으면 버튼으로만 열기 — 다른 PC에서 install.bat 재실행 전에도 실행되도록)
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+except ImportError:
+    TkinterDnD = None
+
 from table_engine import TableEngine
 from ocr_engine import OCREngine
 from uth_fixed_engine import UTHFixedEngine
 import exporters
+import text_refiner
 
 # 화면 표시명 -> PaddleOCR 언어 코드
 LANG_OPTIONS = {
@@ -35,14 +42,20 @@ LANG_OPTIONS = {
 }
 
 PREVIEW_MAX = (460, 640)
+RESULT_DIR = os.path.join(os.path.dirname(_HERE), "결과")   # 인식 결과 자동 저장 위치 (프로젝트 루트/결과)
 
 
 class TableOCRApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("표 OCR - 캡처 표 문자추출")
-        root.geometry("1140x720")
-        root.minsize(900, 560)
+        # 창 크기를 화면 배율에 맞춘다 — main()이 DPI 인식을 켜서 글자·버튼은 배율만큼 커지는데
+        # 창 크기를 픽셀 고정값으로 두면 고배율(200% 이상) 화면에서 툴바가 잘린다
+        s = max(1.0, float(root.tk.call("tk", "scaling")) / (96 / 72))
+        w = min(int(1140 * s), root.winfo_screenwidth())
+        h = min(int(720 * s), root.winfo_screenheight() - int(80 * s))
+        root.geometry(f"{w}x{h}")
+        root.minsize(min(int(900 * s), w), min(int(560 * s), h))
 
         # 엔진 (언어별로 재사용, 언어 바뀌면 재생성)
         self.table_engine: TableEngine | None = None
@@ -86,28 +99,48 @@ class TableOCRApp:
         ttk.Label(bar, text="언어:").pack(side=tk.LEFT, padx=(12, 4))
         self.lang_var = tk.StringVar(value="한국어 (한글+영문)")
         lang_cb = ttk.Combobox(bar, textvariable=self.lang_var,
-                               values=list(LANG_OPTIONS.keys()), state="readonly", width=15)
+                               values=list(LANG_OPTIONS.keys()), state="readonly", width=18)
         lang_cb.pack(side=tk.LEFT)
         lang_cb.bind("<<ComboboxSelected>>", self._on_lang_change)
 
         self.run_btn = ttk.Button(bar, text="▶  인식 실행", command=self.run, state=tk.DISABLED)
         self.run_btn.pack(side=tk.LEFT, padx=(12, 3))
 
-        # 내보내기 버튼 (오른쪽)
-        self.csv_btn = ttk.Button(bar, text="💾 CSV", command=self.export_csv, state=tk.DISABLED)
+        # 두 번째 줄: 왼쪽 '일반 텍스트' 후처리 옵션, 오른쪽 내보내기 버튼
+        # (한 줄에 다 두면 화면 배율이 큰 PC에서 오른쪽 버튼이 창 밖으로 잘린다)
+        opts = ttk.Frame(self.root, padding=(8, 0, 8, 4))
+        opts.pack(side=tk.TOP, fill=tk.X)
+
+        self.csv_btn = ttk.Button(opts, text="💾 CSV", command=self.export_csv, state=tk.DISABLED)
         self.csv_btn.pack(side=tk.RIGHT, padx=3)
-        self.xlsx_btn = ttk.Button(bar, text="💾 Excel", command=self.export_xlsx, state=tk.DISABLED)
+        self.xlsx_btn = ttk.Button(opts, text="💾 Excel", command=self.export_xlsx, state=tk.DISABLED)
         self.xlsx_btn.pack(side=tk.RIGHT, padx=3)
-        self.copy_btn = ttk.Button(bar, text="📋 복사", command=self.copy_result, state=tk.DISABLED)
+        self.copy_btn = ttk.Button(opts, text="📋 복사", command=self.copy_result, state=tk.DISABLED)
         self.copy_btn.pack(side=tk.RIGHT, padx=3)
+
+        ttk.Label(opts, text="일반 텍스트 후처리:").pack(side=tk.LEFT)
+        self.refine_var = tk.BooleanVar(value=True)
+        self.matter_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opts, text="문장 정제 (쪽번호·머리글 제거, 줄 잇기)",
+                        variable=self.refine_var,
+                        command=self._on_refine_change).pack(side=tk.LEFT, padx=(6, 0))
+        self.matter_chk = ttk.Checkbutton(opts, text="부속물 삭제 (차례·판권·광고)",
+                                          variable=self.matter_var)
+        self.matter_chk.pack(side=tk.LEFT, padx=(12, 0))
 
         body = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
 
         left = ttk.Frame(body)
-        self.preview_label = ttk.Label(left, text="\n\n이미지 또는 PDF를 열어주세요.",
+        hint = "\n\n이미지 또는 PDF를 열어주세요."
+        if TkinterDnD is not None:
+            hint += "\n\n(이미지·PDF·폴더를 여기로 끌어다 놓아도 됩니다)"
+        self.preview_label = ttk.Label(left, text=hint,
                                        anchor="center", relief="solid", padding=6)
         self.preview_label.pack(fill=tk.BOTH, expand=True)
+        if TkinterDnD is not None:
+            self.preview_label.drop_target_register(DND_FILES)
+            self.preview_label.dnd_bind("<<Drop>>", self._on_drop)
         body.add(left, weight=1)
 
         right = ttk.Frame(body)
@@ -128,8 +161,8 @@ class TableOCRApp:
     # ------------------------------------------------------------------ #
     # 파일 열기 / 미리보기
     # ------------------------------------------------------------------ #
-    def open_image(self):
-        path = filedialog.askopenfilename(
+    def open_image(self, path=None):
+        path = path or filedialog.askopenfilename(
             title="이미지 선택",
             filetypes=[("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp"),
                        ("모든 파일", "*.*")])
@@ -140,14 +173,35 @@ class TableOCRApp:
         self.run_btn.config(state=tk.NORMAL)
         self.status_var.set(f"불러옴: {os.path.basename(path)}")
 
-    def open_pdf(self):
-        path = filedialog.askopenfilename(
+    def open_pdf(self, path=None):
+        path = path or filedialog.askopenfilename(
             title="PDF 선택", filetypes=[("PDF 파일", "*.pdf"), ("모든 파일", "*.*")])
         if not path:
             return
         self.loaded_path, self.loaded_kind = path, "pdf"
         self._show_pdf_preview(path)
         self.run_btn.config(state=tk.NORMAL)
+
+    def _on_drop(self, event):
+        """미리보기 영역에 끌어다 놓은 이미지/PDF/폴더를 연다 (여러 개면 첫 항목)."""
+        # 파일이 열려 있는데 실행 버튼이 꺼져 있으면 = 인식 중
+        if self.loaded_path and self.run_btn.instate(["disabled"]):
+            self.status_var.set("인식 중에는 새 파일을 열 수 없습니다.")
+            return
+        paths = self.root.tk.splitlist(event.data)  # 공백 든 경로는 {..}로 감싸져 온다
+        if not paths:
+            return
+        path = paths[0]
+        import batch
+        ext = os.path.splitext(path)[1].lower()
+        if os.path.isdir(path):
+            self.open_folder_batch(path)
+        elif ext == ".pdf":
+            self.open_pdf(path)
+        elif ext in batch.IMAGE_EXTS:
+            self.open_image(path)
+        else:
+            self.status_var.set(f"지원하지 않는 파일입니다: {os.path.basename(path)}")
 
     def _show_image_preview(self, path):
         try:
@@ -192,6 +246,12 @@ class TableOCRApp:
     def _on_lang_change(self, _event=None):
         self.status_var.set(f"언어: {self.lang_var.get()} (다음 인식부터 적용)")
 
+    def _on_refine_change(self):
+        # 부속물 삭제는 문장 정제가 켜져 있을 때만 동작
+        self.matter_chk.config(state=tk.NORMAL if self.refine_var.get() else tk.DISABLED)
+        self.status_var.set("문장 정제 켬 (다음 인식부터 적용)"
+                            if self.refine_var.get() else "문장 정제 끔 — 쪽별 원문 그대로 (다음 인식부터 적용)")
+
     # ------------------------------------------------------------------ #
     # 인식 실행 (백그라운드 스레드)
     # ------------------------------------------------------------------ #
@@ -209,12 +269,13 @@ class TableOCRApp:
         self._set_busy(True, "인식 준비 중...")
         self._set_export_enabled(False)
         mode = self.mode_var.get()
+        refine = (self.refine_var.get(), self.refine_var.get() and self.matter_var.get())
         threading.Thread(target=self._worker,
-                         args=(self.loaded_path, self.loaded_kind, mode, lang),
+                         args=(self.loaded_path, self.loaded_kind, mode, lang, refine),
                          daemon=True).start()
 
-    def open_folder_batch(self):
-        folder = filedialog.askdirectory(title="이미지 폴더 선택 (일괄 표 추출)")
+    def open_folder_batch(self, folder=None):
+        folder = folder or filedialog.askdirectory(title="이미지 폴더 선택 (일괄 표 추출)")
         if not folder:
             return
         import batch
@@ -291,21 +352,26 @@ class TableOCRApp:
             hidden = max(0, len(ui_tables) - 40)
             if hidden:
                 summary += f" (탭 {hidden}개 생략, 저장 시 모두 포함)"
-            summary += "   ·   [통합] 탭에서 Excel/CSV로 저장하세요"
+            summary += self._auto_save(f"{os.path.basename(os.path.normpath(folder))}_통합", ui_tables)
             self.msg_queue.put(("status", summary))
         except Exception as exc:  # noqa: BLE001
             self.msg_queue.put(("error", f"{type(exc).__name__}: {exc}"))
         finally:
             self.msg_queue.put(("done", None))
 
-    def _worker(self, path, kind, mode, lang):
+    def _worker(self, path, kind, mode, lang, refine=(False, False)):
         try:
             self._prepare_engine(mode, lang)
+            base = os.path.splitext(os.path.basename(path))[0]
             if mode in ("table", "uth"):
-                self._worker_table(path, kind, mode)
+                results = self._worker_table(path, kind, mode)
+                saved = self._auto_save(f"{base}_표", results) if results else ""
+                self.msg_queue.put(("status", "완료" + saved))
             else:
-                self._worker_plain(path, kind)
-            self.msg_queue.put(("status", "완료"))
+                text, notes = self._worker_plain(path, kind, *refine)
+                saved = self._auto_save(f"{base}_텍스트", text) if text else ""
+                self.msg_queue.put(("status", "완료" + saved +
+                                    (" — 삭제: " + " / ".join(notes) if notes else "")))
         except Exception as exc:  # noqa: BLE001
             self.msg_queue.put(("error", f"{type(exc).__name__}: {exc}"))
         finally:
@@ -359,6 +425,7 @@ class TableOCRApp:
 
         if results:
             self.msg_queue.put(("tables", results))
+            return results
         elif mode == "uth":
             self.msg_queue.put(("message",
                 "행을 찾지 못했습니다.\n\n· UtradeHub '사용자관리' 캡처(1788x892)인지 확인하세요.\n"
@@ -368,22 +435,51 @@ class TableOCRApp:
                 "표를 찾지 못했습니다.\n\n· 표 테두리가 뚜렷한 이미지를 사용해 보세요.\n"
                 "· '일반 텍스트' 모드로도 시도해 볼 수 있습니다."))
 
-    def _worker_plain(self, path, kind):
+    def _worker_plain(self, path, kind, refine=False, drop_matter=False):
+        """일반 텍스트 인식. (결과 텍스트, 부속물 삭제 보고 줄 목록)을 돌려준다."""
         if kind == "pdf":
             def prog(cur, total):
                 self.msg_queue.put(("status", f"OCR 진행 중...  {cur}/{total} 페이지"))
             pages = self.text_engine.ocr_pdf(path, progress_cb=prog)
+        else:
+            self.msg_queue.put(("status", "OCR 진행 중..."))
+            pages = [self.text_engine.ocr_image_file(path)]
+        page_texts = ["\n".join(t for t, _ in lines) for lines in pages]
+
+        notes: list[str] = []
+        if refine:
+            text, notes = text_refiner.refine_pages(page_texts, drop_matter=drop_matter)
+        elif kind == "pdf":
             chunks = []
-            for idx, lines in enumerate(pages, 1):
+            for idx, pt in enumerate(page_texts, 1):
                 chunks.append(f"===== {idx} 페이지 =====")
-                chunks.append("\n".join(text for text, _ in lines))
+                chunks.append(pt)
                 chunks.append("")
             text = "\n".join(chunks).strip()
         else:
-            self.msg_queue.put(("status", "OCR 진행 중..."))
-            lines = self.text_engine.ocr_image_file(path)
-            text = "\n".join(t for t, _ in lines)
+            text = page_texts[0]
         self.msg_queue.put(("plain", text or "(인식된 텍스트가 없습니다.)"))
+        return text, notes
+
+    def _auto_save(self, base, data):
+        """인식 결과를 결과/ 폴더에 자동 저장. 표 목록 → .xlsx, 문자열 → .txt.
+        상태줄에 붙일 문구를 돌려준다. 저장 실패는 인식 결과를 막지 않도록 문구로만 알린다."""
+        ext = "txt" if isinstance(data, str) else "xlsx"
+        try:
+            os.makedirs(RESULT_DIR, exist_ok=True)
+            path = os.path.join(RESULT_DIR, f"{base}.{ext}")
+            n = 2
+            while os.path.exists(path):            # 이전 결과는 덮어쓰지 않는다
+                path = os.path.join(RESULT_DIR, f"{base}_{n}.{ext}")
+                n += 1
+            if ext == "txt":
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(data + "\n")
+            else:
+                exporters.save_grids_to_xlsx(data, path)
+        except Exception as exc:  # noqa: BLE001
+            return f"   ·   ⚠ 자동 저장 실패: {exc}"
+        return f"   ·   결과 저장: 결과\\{os.path.basename(path)}"
 
     # ------------------------------------------------------------------ #
     # 결과 렌더링
@@ -513,9 +609,8 @@ class TableOCRApp:
 
     def _default_dir(self):
         root_dir = os.path.abspath(os.path.join(_HERE, ".."))
-        res_dir = os.path.join(root_dir, "결과")
-        if os.path.isdir(res_dir):
-            return res_dir
+        if os.path.isdir(RESULT_DIR):
+            return RESULT_DIR
         if self.loaded_path and os.path.isfile(self.loaded_path):
             return os.path.dirname(self.loaded_path)
         return root_dir
@@ -574,7 +669,7 @@ def main():
         windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
     TableOCRApp(root)
     root.mainloop()
 

@@ -8,6 +8,7 @@ pymupdf>=1.24.0
 pillow>=10.0.0
 numpy>=1.26.0
 openpyxl>=3.1.0         # 엑셀(.xlsx) 저장
+tkinterdnd2>=0.6.3      # 미리보기 영역 드래그앤드롭
 
 # 선택/레거시 폴백 (PaddleOCR 엔진을 직접 사용하려는 경우에만 설치)
 # paddlepaddle>=3.0.0

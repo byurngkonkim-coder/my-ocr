@@ -252,7 +252,10 @@ def fix_split_tokens(text: str, document_corpus: str = "") -> str:
                         continue
 
                     # 2) D-10 문서 내 실증 결합 (결합형이 문서 내에 존재하는 경우)
-                    if len(joined) <= 8 and tok_counts.get(joined, 0) >= 2:
+                    # 띄어 쓴 형태가 더 많으면 결합하지 않는다 — OCR이 몇 번 붙여 읽은
+                    # 이름('스펜서 존슨' 다수 vs '스펜서존슨' 2회)까지 붙이는 것 방지
+                    if (len(joined) <= 8 and tok_counts.get(joined, 0) >= 2
+                            and tok_counts[joined] >= corpus.count(f"{w} {core_next}")):
                         res.append(joined + punct_next)
                         i += 2
                         continue
