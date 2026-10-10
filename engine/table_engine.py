@@ -15,8 +15,10 @@ from html.parser import HTMLParser
 import numpy as np
 from PIL import Image
 
+from ocr_engine import rapidocr_params, paddle_fallback_error
+
 try:
-    import fitz  # PyMuPDF (PDF 렌더링)
+    import pymupdf as fitz  # PyMuPDF (PDF 렌더링)
     _HAS_FITZ = True
 except Exception:  # pragma: no cover
     _HAS_FITZ = False
@@ -150,24 +152,19 @@ class TableEngine:
         try:
             from rapid_table import RapidTable
             from rapid_table.utils import RapidTableInput
-            from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
 
-            ocr_params = {}
-            if self.lang and self.lang.lower() in ("korean", "kor", "ko"):
-                ocr_params = {
-                    "Rec.ocr_version": OCRVersion.PPOCRV5,
-                    "Rec.lang_type": LangRec.KOREAN,
-                    "Rec.model_type": ModelType.MOBILE,
-                }
-            cfg = RapidTableInput(ocr_params=ocr_params if ocr_params else None)
+            cfg = RapidTableInput(ocr_params=rapidocr_params(self.lang))
             self._pipe = RapidTable(cfg=cfg)
             self._engine_type = "rapid_table"
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            rapid_exc = exc
 
         # 2. PaddleOCR 폴백
-        from paddleocr import TableRecognitionPipelineV2
+        try:
+            from paddleocr import TableRecognitionPipelineV2
+        except ImportError:
+            raise paddle_fallback_error(rapid_exc) from rapid_exc
         self._engine_type = "paddleocr"
 
         kwargs = dict(

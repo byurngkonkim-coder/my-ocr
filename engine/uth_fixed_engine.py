@@ -20,6 +20,8 @@ import re
 import numpy as np
 from PIL import Image
 
+from ocr_engine import rapidocr_params, paddle_fallback_error
+
 # --- 고정 좌표 (1788x892 캡처 기준, 실측값) ---
 COLS_TEXT = [
     ("NO",        300,  362),
@@ -67,23 +69,17 @@ class UTHFixedEngine:
         # 1. 고성능·경량 ONNX Runtime 기반 RapidOCR 우선 시도
         try:
             from rapidocr import RapidOCR
-            from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
-
-            params = {}
-            if self.lang and self.lang.lower() in ("korean", "kor", "ko"):
-                params = {
-                    "Rec.ocr_version": OCRVersion.PPOCRV5,
-                    "Rec.lang_type": LangRec.KOREAN,
-                    "Rec.model_type": ModelType.MOBILE,
-                }
-            self._ocr = RapidOCR(params=params if params else None)
+            self._ocr = RapidOCR(params=rapidocr_params(self.lang))
             self._engine_type = "rapidocr"
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            rapid_exc = exc
 
         # 2. PaddleOCR 폴백
-        from paddleocr import PaddleOCR
+        try:
+            from paddleocr import PaddleOCR
+        except ImportError:
+            raise paddle_fallback_error(rapid_exc) from rapid_exc
         self._engine_type = "paddleocr"
 
         rec = LANG_REC_MODELS.get(self.lang)

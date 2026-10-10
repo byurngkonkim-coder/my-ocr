@@ -73,8 +73,3 @@ def combine_tables(items: list[tuple[str, list[list[str]]]],
     for row in combined:
         row.extend([""] * (max_cols - len(row)))
     return combined
-
-
-def split_source_tables(items: list[tuple[str, list[list[str]]]]):
-    """엑셀 시트용: (통합 라벨 제외한) 개별 표 목록을 그대로 돌려준다."""
-    return list(items)

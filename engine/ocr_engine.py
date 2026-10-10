@@ -12,11 +12,33 @@ import numpy as np
 from PIL import Image
 
 # PDF 렌더링용 (PyMuPDF). 없으면 PDF 기능만 비활성화.
+# 'import fitz' 는 매 실행 deprecated 경고를 내므로 새 이름으로 불러온다
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz
     _HAS_FITZ = True
 except Exception:  # pragma: no cover
     _HAS_FITZ = False
+
+
+def rapidocr_params(lang: str):
+    """언어별 RapidOCR 인식 모델 설정. None 이면 기본 모델(중국어+영어).
+
+    OCREngine·TableEngine·UTHFixedEngine 이 함께 쓴다. 일본어는 PP-OCRv5 모델이 없어 v4.
+    """
+    from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
+    rec = {"korean": (OCRVersion.PPOCRV5, LangRec.KOREAN),
+           "en": (OCRVersion.PPOCRV5, LangRec.EN),
+           "japan": (OCRVersion.PPOCRV4, LangRec.JAPAN)}.get((lang or "").lower())
+    if rec is None:
+        return None
+    return {"Rec.ocr_version": rec[0], "Rec.lang_type": rec[1], "Rec.model_type": ModelType.MOBILE}
+
+
+def paddle_fallback_error(rapid_exc: Exception) -> RuntimeError:
+    """RapidOCR 실패 후 PaddleOCR 도 없을 때 — 'No module named paddleocr' 대신 진짜 원인을 알린다."""
+    return RuntimeError(
+        f"OCR 엔진(RapidOCR)을 준비하지 못했습니다: {type(rapid_exc).__name__}: {rapid_exc}\n"
+        "(대체 엔진 PaddleOCR 도 설치되어 있지 않습니다. engine\\install.bat 을 다시 실행해 보세요.)")
 
 
 class OCREngine:
@@ -38,23 +60,17 @@ class OCREngine:
         # 1. 고성능·경량 ONNX Runtime 기반 RapidOCR 우선 시도
         try:
             from rapidocr import RapidOCR
-            from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
-
-            params = {}
-            if self.lang and self.lang.lower() in ("korean", "kor", "ko"):
-                params = {
-                    "Rec.ocr_version": OCRVersion.PPOCRV5,
-                    "Rec.lang_type": LangRec.KOREAN,
-                    "Rec.model_type": ModelType.MOBILE,
-                }
-            self._ocr = RapidOCR(params=params if params else None)
+            self._ocr = RapidOCR(params=rapidocr_params(self.lang))
             self._engine_type = "rapidocr"
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            rapid_exc = exc
 
         # 2. PaddleOCR 폴백
-        from paddleocr import PaddleOCR
+        try:
+            from paddleocr import PaddleOCR
+        except ImportError:
+            raise paddle_fallback_error(rapid_exc) from rapid_exc
         self._engine_type = "paddleocr"
         try:
             self._ocr = PaddleOCR(
@@ -79,8 +95,9 @@ class OCREngine:
     # ------------------------------------------------------------------ #
     # 공개 API
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _refine_lines(lines: list[tuple[str, float | None]]) -> list[tuple[str, float | None]]:
+    def _refine_lines(self, lines: list[tuple[str, float | None]]) -> list[tuple[str, float | None]]:
+        if self.lang != "korean":   # 한국어 교정 규칙을 영어·중국어·일본어 결과에 적용하지 않는다
+            return lines
         try:
             from korean_corrector import refine_korean_text
             return [(refine_korean_text(text), score) for text, score in lines]

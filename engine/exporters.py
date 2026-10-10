@@ -2,6 +2,17 @@
 from __future__ import annotations
 
 import csv
+import os
+
+
+def unique_path(path: str) -> str:
+    """같은 이름의 파일이 있으면 '이름_2.확장자', '이름_3.확장자'… 로 비어 있는 경로를 돌려준다."""
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(path):
+        path = f"{base}_{n}{ext}"
+        n += 1
+    return path
 
 
 def grid_to_tsv(grid: list[list[str]]) -> str:

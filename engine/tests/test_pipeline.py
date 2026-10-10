@@ -75,6 +75,34 @@ def test_korean_corrector_fixes():
         assert korean_corrector.refine_korean_text(src) == want, (src, korean_corrector.refine_korean_text(src))
 
 
+def test_unique_path():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "결과.xlsx")
+        assert exporters.unique_path(p) == p
+        open(p, "w").close()
+        assert exporters.unique_path(p) == os.path.join(d, "결과_2.xlsx")
+
+
+def test_rapidocr_params_per_language():
+    # 영어·일본어를 골라도 기본(중국어) 모델로 인식하던 문제 (2026-10-10)
+    assert ocr_engine.rapidocr_params("korean")["Rec.lang_type"].name == "KOREAN"
+    assert ocr_engine.rapidocr_params("en")["Rec.lang_type"].name == "EN"
+    assert ocr_engine.rapidocr_params("japan")["Rec.lang_type"].name == "JAPAN"
+    assert ocr_engine.rapidocr_params("ch") is None
+
+
+def test_korean_refine_only_for_korean():
+    lines = [("Route 66 Highway", 1.0)]
+    assert ocr_engine.OCREngine("en")._refine_lines(lines) == lines
+    assert ocr_engine.OCREngine("korean")._refine_lines([("확인해 주세요", 1.0)]) == [("확인해 주세요", 1.0)]
+
+
+def test_paddle_fallback_error_names_real_cause():
+    err = ocr_engine.paddle_fallback_error(OSError("모델 파일 손상"))
+    assert "RapidOCR" in str(err) and "모델 파일 손상" in str(err)
+
+
 def test_paths_anchoring():
     # 결과/ 는 .gitignore 대상이라 새로 받은 PC에는 없다 — 커밋되는 samples/ 만 확인
     samples_dir = _ROOT / "samples"
@@ -83,7 +111,9 @@ def test_paths_anchoring():
 
 if __name__ == "__main__":
     tests = [test_imports, test_grid_to_tsv, test_combine_tables, test_korean_corrector,
-             test_korean_corrector_preserves, test_korean_corrector_fixes, test_paths_anchoring]
+             test_korean_corrector_preserves, test_korean_corrector_fixes, test_unique_path,
+             test_rapidocr_params_per_language, test_korean_refine_only_for_korean,
+             test_paddle_fallback_error_names_real_cause, test_paths_anchoring]
     for t in tests:
         t()
     print(f"ALL {len(tests)} TESTS PASSED SUCCESSFULLY!")

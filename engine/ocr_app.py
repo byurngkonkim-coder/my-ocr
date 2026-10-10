@@ -216,7 +216,7 @@ class TableOCRApp:
 
     def _show_pdf_preview(self, path):
         try:
-            import fitz
+            import pymupdf as fitz
             doc = fitz.open(path)
             try:
                 page = doc.load_page(0)
@@ -319,15 +319,15 @@ class TableOCRApp:
             files = batch.discover_images(folder, recursive)
             total = len(files)
             per_table: list[tuple[str, list[list[str]]]] = []
-            errors = 0
+            errors: list[str] = []
             for idx, path in enumerate(files, 1):
                 name = os.path.splitext(os.path.basename(path))[0]
                 self.msg_queue.put(("status",
                     f"[{idx}/{total}] 표 인식 중: {os.path.basename(path)}"))
                 try:
                     tables = engine.recognize_image_file(path)
-                except Exception:  # noqa: BLE001
-                    errors += 1
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{os.path.basename(path)}: {type(exc).__name__}: {exc}")
                     continue
                 if len(tables) == 1:
                     per_table.append((name, tables[0]))
@@ -339,7 +339,7 @@ class TableOCRApp:
                 self.msg_queue.put(("message",
                     f"{total}개 파일에서 표를 찾지 못했습니다.\n\n"
                     "표 테두리가 뚜렷한 이미지인지 확인해 보세요."))
-                self.msg_queue.put(("status", f"완료 - 표 0개 (오류 {errors}건)"))
+                self.msg_queue.put(("status", "완료 - 표 0개" + self._error_note(errors)))
                 return
 
             combined = batch.combine_tables(per_table)
@@ -347,11 +347,11 @@ class TableOCRApp:
             self.msg_queue.put(("tables", ui_tables))
             summary = (f"완료 - 파일 {total}개, 표 {len(per_table)}개, "
                        f"통합 {max(0, len(combined) - 1)}행")
-            if errors:
-                summary += f", 오류 {errors}건"
+            summary += self._error_note(errors)
             hidden = max(0, len(ui_tables) - 40)
             if hidden:
                 summary += f" (탭 {hidden}개 생략, 저장 시 모두 포함)"
+            summary += self._size_note(mode, files)
             summary += self._auto_save(f"{os.path.basename(os.path.normpath(folder))}_통합", ui_tables)
             self.msg_queue.put(("status", summary))
         except Exception as exc:  # noqa: BLE001
@@ -365,8 +365,12 @@ class TableOCRApp:
             base = os.path.splitext(os.path.basename(path))[0]
             if mode in ("table", "uth"):
                 results = self._worker_table(path, kind, mode)
-                saved = self._auto_save(f"{base}_표", results) if results else ""
-                self.msg_queue.put(("status", "완료" + saved))
+                if results:
+                    self.msg_queue.put(("status", f"완료 - 표 {len(results)}개"
+                                        + self._size_note(mode, [path])
+                                        + self._auto_save(f"{base}_표", results)))
+                else:
+                    self.msg_queue.put(("status", "완료 - 표 0개" + self._size_note(mode, [path])))
             else:
                 text, notes = self._worker_plain(path, kind, *refine)
                 saved = self._auto_save(f"{base}_텍스트", text) if text else ""
@@ -461,17 +465,30 @@ class TableOCRApp:
         self.msg_queue.put(("plain", text or "(인식된 텍스트가 없습니다.)"))
         return text, notes
 
+    @staticmethod
+    def _error_note(errors):
+        """일괄 처리 오류 — 개수만 보이면 원인을 알 수 없어 첫 오류 내용을 붙인다."""
+        if not errors:
+            return ""
+        return f"   ·   ⚠ 오류 {len(errors)}건 (첫 오류 — {errors[0][:120]})"
+
+    def _size_note(self, mode, paths):
+        """고정양식 모드에 1788×892 가 아닌 캡처가 들어오면 알린다 (좌표가 어긋나 열이 섞일 수 있음)."""
+        if mode != "uth" or self.uth_engine is None:
+            return ""
+        bad = [p for p in paths if not self.uth_engine.is_expected_size(p)]
+        if not bad:
+            return ""
+        return (f"   ·   ⚠ 1788×892 가 아닌 캡처 {len(bad)}개({os.path.basename(bad[0])} 등) "
+                "— 열이 어긋날 수 있으니 '검토필요' 열을 확인하세요")
+
     def _auto_save(self, base, data):
         """인식 결과를 결과/ 폴더에 자동 저장. 표 목록 → .xlsx, 문자열 → .txt.
         상태줄에 붙일 문구를 돌려준다. 저장 실패는 인식 결과를 막지 않도록 문구로만 알린다."""
         ext = "txt" if isinstance(data, str) else "xlsx"
         try:
             os.makedirs(RESULT_DIR, exist_ok=True)
-            path = os.path.join(RESULT_DIR, f"{base}.{ext}")
-            n = 2
-            while os.path.exists(path):            # 이전 결과는 덮어쓰지 않는다
-                path = os.path.join(RESULT_DIR, f"{base}_{n}.{ext}")
-                n += 1
+            path = exporters.unique_path(os.path.join(RESULT_DIR, f"{base}.{ext}"))  # 이전 결과는 덮어쓰지 않는다
             if ext == "txt":
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(data + "\n")

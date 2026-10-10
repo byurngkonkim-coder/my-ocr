@@ -78,8 +78,9 @@ def main():
         folder_name = os.path.basename(os.path.normpath(args.folder))
         out_prefix = os.path.join(args.folder, f"{folder_name}_통합")
 
-    csv_path = out_prefix + ".csv"
-    xlsx_path = out_prefix + ".xlsx"
+    # 이전 결과는 덮어쓰지 않는다 (같은 이름이 있으면 _2, _3 …)
+    csv_path = exporters.unique_path(out_prefix + ".csv")
+    xlsx_path = exporters.unique_path(out_prefix + ".xlsx")
     exporters.save_grid_to_csv(combined, csv_path)
     exporters.save_grids_to_xlsx([("통합", combined)] + per_table, xlsx_path)
 
