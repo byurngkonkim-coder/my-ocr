@@ -103,6 +103,36 @@ def test_title_page_footer_removed_at_edge_only():
     assert out[0] == "본문 문장.\n" and out[1] == "본문." and out[2] == pages[2]
 
 
+def test_garbled_running_header_variants_removed():
+    # 실측(1분의사결정): 같은 머리글을 쪽마다 다르게 읽음 — 띄어쓰기·깨진 쪽번호·장 번호 공백
+    variants = ["n. 머리를 써라 39", "n. 머리를써라 43", "n. 머리를 써라 6?", "n. 머리를써라6i",
+                "n. 머리를 써라 si", "in. 머리를 써라 47", "I . 머리를 써라 17"]
+    pages = [f"{h}\n본문 {i}쪽 문장입니다." for i, h in enumerate(variants)]
+    out = tr.strip_running_headers(pages)
+    assert out[0] == pages[0]                              # 첫 등장(장 머리글)은 보존
+    assert all("써라" not in p for p in out[1:]), out
+
+
+def test_chapter_heads_without_section_mark_kept():
+    # 장 번호 표시가 없는 '누가복음 5' 꼴은 묶지 않는다 (장 머리글 오삭제 방지)
+    pages = [f"누가복음 {i}\n본문 {i}." for i in range(1, 8)]
+    assert tr.strip_running_headers(pages) == pages
+
+
+def test_short_line_joined_when_next_starts_with_ending():
+    text, n = tr.rejoin_split_sentences("자신의 잘못을 발견하\n\n며,아무도 원하지 않는다.")
+    assert n == 1 and text == "자신의 잘못을 발견하며,아무도 원하지 않는다."
+    text, _ = tr.rejoin_split_sentences("성공을 놓치는 일\n을 하는 것 같다.")
+    assert text == "성공을 놓치는 일을 하는 것 같다."
+
+
+def test_short_line_not_joined_to_standalone_word():
+    # '이 책'·'서 있다'·'만 원' 처럼 독립 단어로 시작하는 줄은 제목 뒤에 붙이지 않는다
+    for nxt in ["이 책은 경영을 다룬다.", "서 있는 사람이 많았다.", "만 원을 냈다."]:
+        src = f"머리말\n\n{nxt}"
+        assert tr.rejoin_split_sentences(src)[0] == src, nxt
+
+
 def test_page_number_edge_lines_removed_middle_kept():
     out = tr.strip_page_numbers(["12\n본문 문장.\n2024\n본문 끝.\n- 13 -"])
     assert out == ["본문 문장.\n2024\n본문 끝."]

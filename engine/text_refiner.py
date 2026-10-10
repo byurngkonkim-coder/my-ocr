@@ -151,6 +151,18 @@ _JOSA_WORDS = {"을", "를", "은", "는", "이", "가", "의", "에", "와", "�
                "한테", "이나", "나", "랑", "이랑", "조차", "마저", "으로는", "에서는", "와는", "과는"}
 _SPLIT_MIN_LEN = 60     # 이보다 짧은 줄은 제목·시행일 수 있어 잇지 않는다
 _TOC_LIKE_RE = re.compile(r'\s\d{1,4}$| · ')
+# 단어 첫머리에 올 수 없는 어미·조사 — 다음 줄이 이걸로 시작하면 앞 줄이 짧아도(제목일 수 없으니) 잇는다.
+# 실측: '…잘못을 발견하' ⟨쪽 경계⟩ '며, 아무도…'. '이·가·서·만·도' 는 '이 책'·'서 있다'·'만 원' 처럼
+# 독립 단어로도 쓰여 제외한다
+_BOUND_START = {"며", "으며", "니", "으니", "니까", "지만", "면서", "도록", "거나", "는데", "은데", "으면",
+                "는", "은", "을", "를", "에", "의", "에서", "에게", "으로", "로", "께서",
+                "었다", "았다", "였다", "했다", "한다", "된다", "합니다", "입니다", "습니다", "니다"}
+
+
+def _starts_bound(line: str) -> bool:
+    # 첫 토큰의 앞쪽 한글만 본다 — 전각 쉼표가 반각으로 바뀌며 '며,아무도' 처럼 붙어 오는 경우가 있다
+    m = re.match(r'[가-힣]+', line.strip())
+    return bool(m) and m.group(0) in _BOUND_START
 
 
 def _glue(before: str, after: str) -> str:
@@ -179,6 +191,12 @@ def rejoin_split_sentences(text: str) -> tuple[str, int]:
             if j >= len(lines):
                 break
             s, nxt = cur.rstrip(), lines[j].strip()
+            bound = bool(s) and re.search(r'[가-힣]$', s) is not None and _starts_bound(nxt)
+            if bound:   # 끊긴 어미·조사 — 한 단어가 잘린 것이니 공백 없이 잇는다
+                cur = s + nxt
+                joined += 1
+                i = j
+                continue
             if (len(s) < _SPLIT_MIN_LEN or _SENT_END.search(s) or _TOC_LIKE_RE.search(s)
                     or not re.match(r'[가-힣]', nxt)
                     or (len(nxt) < 30 and not _SENT_END.search(nxt))):   # 다음 줄이 제목 꼴
@@ -200,11 +218,25 @@ _PAGE_NO_RE = re.compile(r'^\d{1,4}\s+|\s+\d{1,4}$')
 _FOOTER_RE = re.compile(r'^(?:[^|\d][^|]{0,39}\|\s*\d{1,4}|\d{1,4}\s*\|[^|]{1,40})$')
 
 
+# OCR 이 같은 머리글을 쪽마다 다르게 읽는 경우(실측: 1분의사결정 165쪽) —
+#   장 번호가 깨짐('IV.'·'n.'·'in,'), 쪽번호가 깨지거나 붙음('6?'·'6i'·'찾는다23'), 띄어쓰기가 다름('머리를써라')
+_SECTION_PREFIX_RE = re.compile(r'^(?:[IVXivxnl]{1,4}|\d{1,3})?\s*[.,]\s*')     # 'IV.'·'I .'·'n.'·'in,'
+# 쪽번호: 숫자가 섞인 꼬리('6?'·'6i'·'찾는다23'), 또는 한글 뒤 숫자 닮은 글자뿐인 꼬리('51'→'si')
+_GARBLED_PAGE_NO_RE = re.compile(r'\s*[\dIlOoi?!|]*\d[\dIlOoi?!|]*$|(?<=[가-힣])\s+[IlOoiSsZz?!|]{1,3}$')
+
+
 def _header_key(line: str) -> str | None:
     k = re.sub(r'\s+', ' ', line.strip())
     stripped = _PAGE_NO_RE.sub('', k).strip()
     if stripped != k and ' ' in stripped:
         k = stripped
+    # 장 번호 표시가 앞에 있으면 깨진·붙은 쪽번호까지 떼고 공백 없이 비교한다.
+    # 장 번호 표시가 없는 '누가복음 5'·'Chapter 1' 은 위 규칙대로 묶지 않는다(장 머리글 보호)
+    m = _SECTION_PREFIX_RE.match(k)
+    if m and m.end() > 0:
+        core = _GARBLED_PAGE_NO_RE.sub('', k[m.end():]).strip()
+        if len(re.findall(r'[가-힣A-Za-z]', core)) >= 4:
+            k = '§' + re.sub(r'\s+', '', core)
     if not (2 <= len(k) <= _HEADER_MAX_LEN) or k.startswith('['):
         return None
     if not re.search(r'[가-힣A-Za-z]{2}', k):
