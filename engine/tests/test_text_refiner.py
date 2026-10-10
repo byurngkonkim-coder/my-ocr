@@ -6,6 +6,7 @@ _ENGINE = Path(__file__).resolve().parent.parent
 if str(_ENGINE) not in sys.path:
     sys.path.insert(0, str(_ENGINE))
 
+import korean_corrector
 import text_refiner as tr
 
 SENT = "이것은 충분히 긴 본문 문장으로 마침표로 끝난다."
@@ -147,6 +148,47 @@ def test_short_title_pages_kept():
         pages = [SENT, "2026년 봄\n스펜서 존슨", title, SENT]
         notes = []
         assert tr.drop_noise_pages(pages, notes) == pages and notes == [], title
+
+
+def test_heading_and_list_not_joined_to_body():
+    # 정제본 실측: 짧은 제목·목록·표 행을 본문에 붙였다 — 오른쪽 끝까지 찬 줄만 잇는다
+    body = "".join(f"본문 {k}번째 줄은 쪽의 오른쪽 끝까지 꽉 차 있다.\n" for k in range(6))
+    page = (body +
+            "경영자는 조직의 성과를 책임지는 사람이며 그 성과는\n"
+            "조직 바깥에서 고객에 의해 판정된다고 보아야 한다.\n"
+            "목표는 완전한 이해다\n"
+            "리서치를 하는 목적은 완벽하게 주제를 파악하는 것이다.\n"
+            "- 태양열 시장을 개발할 전략\n"
+            "국내 극장 4,928,000\n"
+            "국외 극장 1,228,000")
+    out = tr.join_broken_lines(page).splitlines()
+    assert out[6] =="경영자는 조직의 성과를 책임지는 사람이며 그 성과는 조직 바깥에서 고객에 의해 판정된다고 보아야 한다."
+    assert "목표는 완전한 이해다" in out and "- 태양열 시장을 개발할 전략" in out
+    assert "국내 극장 4,928,000" in out and "국외 극장 1,228,000" in out
+
+
+def test_meaning_changing_join_blocked():
+    # '이 점을'→'이점을'·'또 한'→'또한' 은 뜻이 바뀐다 — 뒤 말이 문서에서 독립 어절로 자주 쓰이면 붙이지 않는다
+    doc = ("이점을 살린다. 이점을 본다. 이 점을 기억하라. 점을 찍는다. 점을 본다. 점을 센다. "
+           "그래서 갔다. 그래서 왔다. 그 래서 떠났다.")
+    out = korean_corrector.fix_split_tokens(doc, document_corpus=doc)
+    assert "이 점을 기억하라" in out and "그래서 떠났다" in out
+
+
+def test_author_spacing_majority_kept():
+    # 저자가 3번 넘게 띄어 쓴 복합어는 OCR 우연이 아니다 — 붙이지 않는다
+    doc = "측정지표를 본다. 측정지표를 쓴다. 측정지표를 고친다. " + "측정 지표를 정한다. " * 3
+    out = korean_corrector.fix_split_tokens(doc, document_corpus=doc)
+    assert out.count("측정 지표를") == 3
+
+
+def test_punctuation_after_initials_kept():
+    assert tr.fix_punctuation_spacing("C.의 주장과 U.S.의 정책") == "C.의 주장과 U.S.의 정책"
+    assert tr.fix_punctuation_spacing("했다.그리고") == "했다. 그리고"
+
+
+def test_single_char_word_line_kept():
+    assert tr.remove_noise_lines("즉,\n본문 줄\nl") == "즉,\n본문 줄"
 
 
 def test_page_number_edge_lines_removed_middle_kept():

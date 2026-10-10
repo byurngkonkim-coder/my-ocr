@@ -63,8 +63,10 @@ def normalize_chars(text: str) -> str:
 
 def remove_noise_lines(text: str) -> str:
     """의미 있는 문자(한글·영문·숫자)가 2자 미만인 순수 잡음 줄 제거 ('l', '柴', '•■')."""
+    # '즉,'·'단,' 처럼 한 글자 말 + 문장부호인 줄은 내용이라 남긴다 (정제본 실측)
     return "\n".join(l for l in text.splitlines()
-                     if not l.strip() or len(re.sub(r"[^\w가-힣]", "", l)) >= 2)
+                     if not l.strip() or len(re.sub(r"[^\w가-힣]", "", l)) >= 2
+                     or re.fullmatch(r"[가-힣][,.:]", l.strip()))
 
 
 def fix_hyphenated_words(text: str) -> str:
@@ -78,7 +80,9 @@ def fix_punctuation_spacing(text: str) -> str:
     """구두점 앞 공백 제거, 한글 앞 구두점 뒤 띄움, 괄호 안쪽 공백 제거.
     원본은 구두점 뒤 영문까지 띄워 'www.naver.com'·'e.g.' 를 망가뜨려 한글 앞만 띄운다."""
     text = re.sub(r"(?<=\S)[ \t]+([.,!?])(?=\s|$|[가-힣])", r"\1", text, flags=re.M)
-    text = re.sub(r"([.,!?])([가-힣])", r"\1 \2", text)
+    # 영문 머리글자 뒤 마침표('C.의'·'U.S.의')는 띄우지 않는다 (정제본 실측)
+    text = re.sub(r"(?<![A-Za-z])([.])([가-힣])|([,!?])([가-힣])",
+                  lambda m: f"{m.group(1) or m.group(3)} {m.group(2) or m.group(4)}", text)
     text = re.sub(r"([(\[])[ \t]+", r"\1", text)
     return re.sub(r"[ \t]+([)\]])", r"\1", text)
 
@@ -126,9 +130,18 @@ def strip_page_numbers(pages: list[str]) -> list[str]:
 _PARA_START = re.compile(r'^[가-힣A-Za-z0-9\"\'\(「『《]')
 
 
+# 줄이 오른쪽 끝까지 찼다고 볼 비율 — 쪽에서 흔한 줄 길이(중앙값)의 이만큼 이상이어야 다음 줄과 잇는다.
+# 정제본 23권 실측: 길이만 보면 제목('목표는 완전한 이해다')·표 행('국내 극장 4,928,000')을 본문에 붙였다
+_FULL_LINE_RATIO = 0.75
+_LIST_START_RE = re.compile(r'^[-–—•·*▶▷►>»※□■○●◆◇]')
+
+
 def join_broken_lines(text: str) -> str:
-    """같은 단락에 속하는 물리적 줄들을 공백으로 이어 붙인다."""
+    """같은 단락에 속하는 물리적 줄들을 공백으로 이어 붙인다.
+    오른쪽 끝까지 찬 줄(조판상 줄바꿈)만 잇고, 짧은 줄(제목·표 행)과 목록 항목 앞에서는 멈춘다."""
     lines = text.splitlines()
+    lens = sorted(len(l.strip()) for l in lines if l.strip())
+    full = lens[len(lens) // 2] * _FULL_LINE_RATIO if lens else 0
     out: list[str] = []
     i = 0
     while i < len(lines):
@@ -141,7 +154,9 @@ def join_broken_lines(text: str) -> str:
             nxt = lines[i + 1]
             if not nxt.strip():
                 break
-            if _should_join(cur, nxt):
+            # 지금까지 이은 줄이 아니라 '현재 물리적 줄'(lines[i])이 끝까지 찼는지를 본다
+            if (len(lines[i].strip()) >= full and not _LIST_START_RE.match(nxt.strip())
+                    and _should_join(cur, nxt)):
                 cur = cur.rstrip() + ' ' + nxt.lstrip()
                 i += 1
             else:

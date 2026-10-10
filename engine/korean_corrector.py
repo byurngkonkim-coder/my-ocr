@@ -187,6 +187,13 @@ _COMMON_SPLIT_PAIRS = {
 }
 
 
+# D-10 결합에서 조심할 한 글자 단어 — 관형사·부사(앞 말)와 의존명사(뒤 말)
+_STANDALONE_1CHAR = {"이", "그", "저", "한", "새", "첫", "옛", "몇", "또", "더", "덜", "못", "안",
+                     "잘", "좀", "꼭", "왜", "다", "수", "곧", "참", "온", "딴", "늘"}
+_BOUND_NOUNS_1CHAR = {"데", "바", "뿐", "줄", "수", "것", "때", "등"}
+_MAX_ACCIDENTAL_SPLITS = 2   # 같은 띄어 쓴 형태가 이 횟수를 넘으면 OCR 우연이 아니라 저자 표기로 본다
+
+
 def fix_split_tokens(text: str, document_corpus: str = "") -> str:
     """D-02, D-11, D-10 규칙을 적용하여 쪼개진 어절을 결합합니다."""
     if not text:
@@ -203,6 +210,7 @@ def fix_split_tokens(text: str, document_corpus: str = "") -> str:
     corpus = document_corpus if document_corpus else text
     tokens = re.findall(r'[가-힣]{2,8}', corpus)
     tok_counts = Counter(tokens)
+    word_counts = None   # 독립 어절 빈도 — 필요할 때만 계산
 
     # 텍스트 줄 단위 순회하며 결합
     lines = text.splitlines()
@@ -240,8 +248,22 @@ def fix_split_tokens(text: str, document_corpus: str = "") -> str:
                     # 2) D-10 문서 내 실증 결합 (결합형이 문서 내에 존재하는 경우)
                     # 띄어 쓴 형태가 더 많으면 결합하지 않는다 — OCR이 몇 번 붙여 읽은
                     # 이름('스펜서 존슨' 다수 vs '스펜서존슨' 2회)까지 붙이는 것 방지
+                    # 띄어 쓴 형태가 3번 이상이면 저자의 표기다('측정 지표' 51회) — OCR 이 어절을 잘못 끊는
+                    # 것은 우연이라 같은 자리에서 거듭 나오지 않는다 (정제본 23권: 복합명사 2,000여 곳을 붙였다)
+                    spaced = corpus.count(f"{w} {core_next}")
                     if (len(joined) <= 8 and tok_counts.get(joined, 0) >= 2
-                            and tok_counts[joined] >= corpus.count(f"{w} {core_next}")):
+                            and tok_counts[joined] >= spaced and spaced <= _MAX_ACCIDENTAL_SPLITS):
+                        # 앞 말이 홀로 쓰이는 한 글자 단어('이 점을'·'또 한'·'한 번'·'수 없이')이고 뒤 말이
+                        # 문서에서 독립 어절로도 자주 쓰이면 진짜 두 단어다 — 붙이면 뜻이 바뀐다('이점을').
+                        # '그 래서' 의 '래서' 처럼 혼자 안 쓰이는 조각은 그대로 붙인다 (정제본 23권 실측)
+                        if w in _STANDALONE_1CHAR or core_next in _BOUND_NOUNS_1CHAR:
+                            if word_counts is None:
+                                word_counts = Counter(re.findall(r'(?<![가-힣])[가-힣]+(?![가-힣])', corpus))
+                            other = core_next if w in _STANDALONE_1CHAR else w
+                            if word_counts.get(other, 0) >= 3:
+                                res.append(w)
+                                i += 1
+                                continue
                         res.append(joined + punct_next)
                         i += 2
                         continue
