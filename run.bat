@@ -19,7 +19,7 @@ if defined PYW (
 ) else if defined PY (
     start "" "%PY%" -X utf8 %TARGET% %*
 ) else (
-    echo [!] 가상환경(venv)이 없습니다. engine\install.bat 을 먼저 실행해주세요.
+    echo [!] 가상환경^(venv^)이 없습니다. engine\install.bat 을 먼저 실행해주세요.
     pause
     exit /b 1
 )

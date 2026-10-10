@@ -10,7 +10,7 @@ if exist "engine\venv\Scripts\python.exe" set "PY=engine\venv\Scripts\python.exe
 if not defined PY if exist "venv\Scripts\python.exe" set "PY=venv\Scripts\python.exe"
 
 if not defined PY (
-  echo [!] 가상환경(venv)이 없습니다. engine\install.bat 을 먼저 실행해주세요.
+  echo [!] 가상환경^(venv^)이 없습니다. engine\install.bat 을 먼저 실행해주세요.
   pause
   exit /b 1
 )
@@ -27,7 +27,7 @@ if not defined TARGET (
 )
 
 if not defined TARGET (
-  echo 폴더가 선택되지 않았습니다. (팁: 폴더를 batch_run.bat 위에 직접 드래그앤드롭해도 됩니다)
+  echo 폴더가 선택되지 않았습니다. ^(팁: 폴더를 batch_run.bat 위에 직접 드래그앤드롭해도 됩니다^)
   pause
   exit /b 1
 )

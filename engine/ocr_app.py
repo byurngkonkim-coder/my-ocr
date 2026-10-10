@@ -48,7 +48,6 @@ class TableOCRApp:
         self.table_engine: TableEngine | None = None
         self.text_engine: OCREngine | None = None
         self.uth_engine: UTHFixedEngine | None = None
-        self.engine_lang: str | None = None
 
         self.loaded_path: str | None = None
         self.loaded_kind: str | None = None   # "image" | "pdf"
@@ -313,31 +312,28 @@ class TableOCRApp:
             self.msg_queue.put(("done", None))
 
     def _prepare_engine(self, mode, lang):
-        need_new = self.engine_lang != lang
+        # 엔진마다 자기 언어를 비교한다 (공용 변수 하나로 비교하면 다른 모드의 낡은 엔진이 재사용됨)
         if mode == "table":
-            if self.table_engine is None or need_new:
+            if self.table_engine is None or self.table_engine.lang != lang:
                 self.msg_queue.put(("status",
                     "표 인식 모델 로딩 중... (최초 실행 시 모델 다운로드로 시간이 걸립니다)"))
                 eng = TableEngine(lang=lang)
                 eng.ensure_engine()
                 self.table_engine = eng
-                self.engine_lang = lang
         elif mode == "uth":
-            if self.uth_engine is None or need_new:
+            if self.uth_engine is None or self.uth_engine.lang != lang:
                 self.msg_queue.put(("status",
                     "OCR 모델 로딩 중... (최초 실행 시 모델 다운로드로 시간이 걸립니다)"))
                 eng = UTHFixedEngine(lang=lang)
                 eng.ensure_engine()
                 self.uth_engine = eng
-                self.engine_lang = lang
         else:
-            if self.text_engine is None or need_new:
+            if self.text_engine is None or self.text_engine.lang != lang:
                 self.msg_queue.put(("status",
                     "OCR 모델 로딩 중... (최초 실행 시 모델 다운로드로 시간이 걸립니다)"))
                 eng = OCREngine(lang=lang)
                 eng.ensure_engine()
                 self.text_engine = eng
-                self.engine_lang = lang
 
     def _worker_table(self, path, kind, mode="table"):
         engine = self.uth_engine if mode == "uth" else self.table_engine

@@ -49,17 +49,41 @@ def test_korean_corrector():
     assert len(refined) > 0
 
 
+def test_korean_corrector_preserves():
+    # 교정기가 망가뜨리면 안 되는 입력 (2026-10-10 품질검사에서 실측된 오변환)
+    keep = [
+        "확인해 주세요", "결재를 승인해 주십시오", "총 66 명이 참석", "Route 66 Highway",
+        "1999 년 설립", "가격 1,099.", "수량99", "저장되었습니다", "이용자관리화면",
+        "무등록 업체", "무등산", "넙적다리", "거대해서", "변수없이", "말이 통한다고",
+        "공부하는구나",
+    ]
+    for text in keep:
+        assert korean_corrector.refine_korean_text(text) == text, text
+
+
+def test_korean_corrector_fixes():
+    cases = {
+        '66안녕하세요.99': '"안녕하세요."',
+        "할수있다": "할 수 있다",
+        "이를위해": "이를 위해",
+        "그로인해": "그로 인해",
+        "먹을것이다": "먹을 것이다",
+        "않되는": "안 되는",
+        "훌륨한": "훌륭한",
+    }
+    for src, want in cases.items():
+        assert korean_corrector.refine_korean_text(src) == want, (src, korean_corrector.refine_korean_text(src))
+
+
 def test_paths_anchoring():
-    res_dir = _ROOT / "결과"
-    assert res_dir.is_dir()
+    # 결과/ 는 .gitignore 대상이라 새로 받은 PC에는 없다 — 커밋되는 samples/ 만 확인
     samples_dir = _ROOT / "samples"
     assert samples_dir.is_dir()
 
 
 if __name__ == "__main__":
-    test_imports()
-    test_grid_to_tsv()
-    test_combine_tables()
-    test_korean_corrector()
-    test_paths_anchoring()
-    print("ALL 5 TESTS PASSED SUCCESSFULLY!")
+    tests = [test_imports, test_grid_to_tsv, test_combine_tables, test_korean_corrector,
+             test_korean_corrector_preserves, test_korean_corrector_fixes, test_paths_anchoring]
+    for t in tests:
+        t()
+    print(f"ALL {len(tests)} TESTS PASSED SUCCESSFULLY!")
