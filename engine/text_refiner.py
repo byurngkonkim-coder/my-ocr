@@ -23,10 +23,11 @@ def refine_pages(pages: list[str], drop_matter: bool = False) -> tuple[str, list
     # 빈 쪽도 남겨 두어 보고의 쪽 번호가 PDF 쪽과 맞게
     pages = [remove_noise_lines(normalize_chars((p or "").strip())) for p in pages]
     notes: list[str] = []
-    if drop_matter:
-        pages, notes = strip_book_matter(pages)
+    if drop_matter:   # 빈 쪽을 남겨 이후 보고(잡음 쪽)의 쪽 번호도 PDF 쪽과 맞게
+        pages, notes = strip_book_matter(pages, keep_empty=True)
     pages = strip_page_numbers(pages)
     pages = strip_running_headers(pages)
+    pages = drop_noise_pages(pages, notes)
     pages = [join_broken_lines(fix_hyphenated_words(p)) for p in pages]
     text, _ = rejoin_split_sentences("\n\n".join(p for p in pages if p.strip()))
     # 줄을 이은 뒤 문서 전체를 근거로 쪼개진 어절 결합 ('사 실은'→'사실은') — 파일형식변환기_MD 처럼
@@ -80,6 +81,32 @@ def fix_punctuation_spacing(text: str) -> str:
     text = re.sub(r"([.,!?])([가-힣])", r"\1 \2", text)
     text = re.sub(r"([(\[])[ \t]+", r"\1", text)
     return re.sub(r"[ \t]+([)\]])", r"\1", text)
+
+
+# ── OCR 잡음 쪽 ─────────────────────────────────────────────────────────────
+# 실측(1분의사결정 96쪽): '…해낼 만큼' ⟨'인걸' 두 글자뿐인 쪽⟩ '의 인격을…' — 그림·얼룩을 읽은 쪽이
+# 문장 한가운데 끼어든다. 글자 수만으로는 '서문'·'PART 1' 같은 제목 쪽과 구분되지 않으므로
+# 문장이 그 쪽을 건너 실제로 이어질 때 — 앞 쪽은 문장이 끝나지 않았고 다음 쪽은 단어 첫머리에 올 수 없는
+# 어미·조사('의 인격을')로 시작 — 만 잡음으로 본다. 앞 쪽 끝만 보면 서명('스펜서 존슨') 뒤 장 제목 쪽을 지운다.
+_NOISE_PAGE_MAX = 15        # 의미 있는 글자(한글·영문·숫자)가 이보다 적은 쪽만 후보
+
+
+def drop_noise_pages(pages: list[str], notes: list[str]) -> list[str]:
+    """문장 중간에 끼어든 짧은 잡음 쪽을 비운다(쪽 번호 유지). 지운 쪽은 notes 에 보고."""
+    out = list(pages)
+    dropped = []
+    for i, p in enumerate(out):
+        s = p.strip()
+        if not s or len(re.findall(r'[가-힣A-Za-z0-9]', s)) >= _NOISE_PAGE_MAX or _SENT_END.search(s):
+            continue
+        prev = next((q.rstrip() for q in reversed(out[:i]) if q.strip()), "")
+        nxt = next((q for q in out[i + 1:] if q.strip()), "")
+        if prev and nxt and not _SENT_END.search(prev) and _starts_bound(nxt):
+            dropped.append(f"{i + 1}('{' '.join(s.split())[:10]}')")
+            out[i] = ""
+    if dropped:
+        notes.append(f"OCR 잡음 쪽 {', '.join(dropped)}")
+    return out
 
 
 # ── 쪽번호 (원본은 LLM이 지우던 것 — 쪽 맨 첫/끝 줄의 숫자 단독 줄만 뗀다) ──────────
@@ -340,7 +367,7 @@ def _drop_toc(pages: list[str], notes: list[str]) -> list[str]:
                 j += 1
         notes.append(f"차례 {i + 1}~{last + 1}번째 쪽('{first[:12]}…')")
         i = last + 1
-    return [p for p in out if p.strip()] if out != pages else pages
+    return out   # 빈 쪽은 strip_book_matter 가 걸러낸다(쪽 번호 유지가 필요하면 남긴다)
 
 
 def _cut_colophon_block(text: str) -> str:
@@ -383,9 +410,10 @@ def _drop_colophon(pages: list[str], notes: list[str]) -> list[str]:
     return out if found else pages
 
 
-def strip_book_matter(pages: list[str]) -> tuple[list[str], list[str]]:
-    """차례(선두)·판권(말미)을 규칙으로 제거. (남은 쪽들, 사람용 보고 줄들) 반환."""
+def strip_book_matter(pages: list[str], keep_empty: bool = False) -> tuple[list[str], list[str]]:
+    """차례(선두)·판권(말미)을 규칙으로 제거. (남은 쪽들, 사람용 보고 줄들) 반환.
+    keep_empty=True 면 지운 쪽을 빈 문자열로 남겨 쪽 번호(인덱스)를 유지한다."""
     notes: list[str] = []
     pages = _drop_colophon(pages, notes)   # 말미 먼저 — 쪽 번호가 입력 기준으로 유지된다
     pages = _drop_toc(pages, notes)
-    return [p for p in pages if p.strip()], notes
+    return (pages if keep_empty else [p for p in pages if p.strip()]), notes

@@ -133,6 +133,22 @@ def test_short_line_not_joined_to_standalone_word():
         assert tr.rejoin_split_sentences(src)[0] == src, nxt
 
 
+def test_noise_page_inside_sentence_dropped():
+    # 실측(1분의사결정 91쪽): '…해낼 만큼' ⟨'인걸'⟩ '의 인격을…'
+    pages = [SENT, "이 인물은 일을 해낼 만큼", "인걸", "의 인격을 갖고 있는가?", SENT]
+    notes = []
+    out = tr.drop_noise_pages(pages, notes)
+    assert out[2] == "" and notes and "3('인걸')" in notes[0]
+
+
+def test_short_title_pages_kept():
+    # 장 제목 쪽 — 앞 쪽이 서명처럼 문장 부호 없이 끝나도, 다음 쪽이 본문 문장으로 시작하면 보존
+    for title in ["서문", "PART 1", "I. 자신의 길을 찾는다"]:
+        pages = [SENT, "2026년 봄\n스펜서 존슨", title, SENT]
+        notes = []
+        assert tr.drop_noise_pages(pages, notes) == pages and notes == [], title
+
+
 def test_page_number_edge_lines_removed_middle_kept():
     out = tr.strip_page_numbers(["12\n본문 문장.\n2024\n본문 끝.\n- 13 -"])
     assert out == ["본문 문장.\n2024\n본문 끝."]
