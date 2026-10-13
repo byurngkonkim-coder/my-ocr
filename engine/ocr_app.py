@@ -33,7 +33,7 @@ from uth_fixed_engine import UTHFixedEngine
 import exporters
 import text_refiner
 
-# 화면 표시명 -> PaddleOCR 언어 코드
+# 화면 표시명 -> OCR 언어 코드 (ocr_engine.rapidocr_params 가 언어별 RapidOCR 모델로 바꾼다)
 LANG_OPTIONS = {
     "한국어 (한글+영문)": "korean",
     "영어": "en",

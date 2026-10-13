@@ -94,8 +94,8 @@ MyOCR/
 │
 ├── engine/                 # 내부 엔진 및 가상환경 격리
 │   ├── ocr_app.py          # GUI 애플리케이션
-│   ├── ocr_engine.py       # 텍스트 OCR 엔진 (RapidOCR 우선/PaddleOCR 폴백)
-│   ├── table_engine.py     # 표 구조 인식 엔진 (RapidTable 우선/PaddleOCR 폴백)
+│   ├── ocr_engine.py       # 텍스트 OCR 엔진 (RapidOCR 한글 v5)
+│   ├── table_engine.py     # 표 구조 인식 엔진 (RapidTable + RapidOCR)
 │   ├── uth_fixed_engine.py # 고정 레이아웃 전용 엔진
 │   ├── korean_corrector.py # 한글 맞춤법/띄어쓰기 정제 모듈
 │   ├── text_refiner.py     # 문장 정제·부속물 삭제 (일반 텍스트 모드)
@@ -132,9 +132,8 @@ MyOCR/
 
 ## 참고
 
-- 기본 엔진: [RapidOCR](https://github.com/RapidAI/RapidOCR) · [RapidTable](https://github.com/RapidAI/RapidTable) (ONNX Runtime, Apache-2.0)
-  — 한글 인식 모델 `korean_PP-OCRv5_mobile_rec`
-- 폴백 엔진: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) — RapidOCR 를 쓸 수 없을 때만 사용
-  (`requirements.txt` 에서 기본 설치하지 않음, `enable_mkldnn=False` 로 실행해 paddlepaddle 3.x oneDNN 버그 회피)
+- OCR 엔진: [RapidOCR](https://github.com/RapidAI/RapidOCR) · [RapidTable](https://github.com/RapidAI/RapidTable) (ONNX Runtime, Apache-2.0)
+  — 한글 인식 모델 `korean_PP-OCRv5_mobile_rec`. 본문·표·고정양식 모두 이 엔진 하나만 씁니다
+  (예전 PaddleOCR 예비 엔진은 2026-10-13 제거).
 - 한글 교정기 `korean_corrector.py` 는 `01_OCR_스캔파일텍스트추출프로그램`·`파일형식변환기_MD` 와 같은 파일입니다.
   고칠 때는 세 곳을 함께 맞춰 주세요.

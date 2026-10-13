@@ -119,9 +119,17 @@ def test_korean_refine_only_for_korean():
     assert ocr_engine.OCREngine("korean")._refine_lines([("확인해 주세요", 1.0)]) == [("확인해 주세요", 1.0)]
 
 
-def test_paddle_fallback_error_names_real_cause():
-    err = ocr_engine.paddle_fallback_error(OSError("모델 파일 손상"))
+def test_engine_error_names_real_cause():
+    err = ocr_engine.engine_error(OSError("모델 파일 손상"))
     assert "RapidOCR" in str(err) and "모델 파일 손상" in str(err)
+    assert "Paddle" not in str(err)
+
+
+def test_rapidocr_is_the_only_engine():
+    # RapidOCR 한글 v5 하나로 일원화 — PaddleOCR 예비 경로 없음 (2026-10-13)
+    src = "".join((_ENGINE / f).read_text(encoding="utf-8")
+                  for f in ("ocr_engine.py", "table_engine.py", "uth_fixed_engine.py"))
+    assert "paddleocr" not in src.lower()
 
 
 def test_paths_anchoring():
@@ -134,7 +142,7 @@ if __name__ == "__main__":
     tests = [test_imports, test_grid_to_tsv, test_combine_tables, test_korean_corrector,
              test_korean_corrector_preserves, test_korean_corrector_fixes, test_unique_path,
              test_rapidocr_params_per_language, test_korean_refine_only_for_korean,
-             test_paddle_fallback_error_names_real_cause, test_paths_anchoring]
+             test_engine_error_names_real_cause, test_rapidocr_is_the_only_engine, test_paths_anchoring]
     for t in tests:
         t()
     print(f"ALL {len(tests)} TESTS PASSED SUCCESSFULLY!")

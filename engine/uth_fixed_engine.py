@@ -20,7 +20,7 @@ import re
 import numpy as np
 from PIL import Image
 
-from ocr_engine import rapidocr_params, paddle_fallback_error
+from ocr_engine import new_rapidocr
 
 # --- 고정 좌표 (1788x892 캡처 기준, 실측값) ---
 COLS_TEXT = [
@@ -45,14 +45,6 @@ HEADER = ["NO", "사업자번호", "업체명", "아이디"] + SERVICE_NAMES + \
 BIZ_RE = re.compile(r"\d{3}-?\d{2}-?\d{4,5}")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
-# 언어별 인식 모델 (table_engine과 동일 매핑)
-LANG_REC_MODELS = {
-    "korean": "korean_PP-OCRv5_mobile_rec",
-    "en": "en_PP-OCRv5_mobile_rec",
-    "japan": "japan_PP-OCRv5_mobile_rec",
-    "ch": None,
-}
-
 
 class UTHFixedEngine:
     """UtradeHub 사용자관리 고정양식 추출 엔진 (TableEngine 호환)."""
@@ -60,52 +52,11 @@ class UTHFixedEngine:
     def __init__(self, lang: str = "korean"):
         self.lang = lang
         self._ocr = None
-        self._engine_type = ""
 
     def ensure_engine(self):
-        if self._ocr is not None:
-            return
-
-        # 1. 고성능·경량 ONNX Runtime 기반 RapidOCR 우선 시도
-        try:
-            from rapidocr import RapidOCR
-            self._ocr = RapidOCR(params=rapidocr_params(self.lang))
-            self._engine_type = "rapidocr"
-            return
-        except Exception as exc:
-            rapid_exc = exc
-
-        # 2. PaddleOCR 폴백
-        try:
-            from paddleocr import PaddleOCR
-        except ImportError:
-            raise paddle_fallback_error(rapid_exc) from rapid_exc
-        self._engine_type = "paddleocr"
-
-        rec = LANG_REC_MODELS.get(self.lang)
-        kwargs = dict(
-            use_textline_orientation=False,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            enable_mkldnn=False,
-            text_detection_model_name="PP-OCRv5_server_det",  # 정확도 우선
-        )
-        if rec:
-            kwargs["text_recognition_model_name"] = rec
-        else:
-            kwargs["lang"] = self.lang
-        # 미지원 파라미터가 있으면 단계적으로 제거하며 재시도
-        for drop in ([],
-                     ["text_detection_model_name"],
-                     ["enable_mkldnn"],
-                     ["text_detection_model_name", "enable_mkldnn"],
-                     ["text_detection_model_name", "enable_mkldnn", "use_textline_orientation"]):
-            try:
-                self._ocr = PaddleOCR(**{k: v for k, v in kwargs.items() if k not in drop})
-                return
-            except TypeError:
-                continue
-        self._ocr = PaddleOCR(lang=self.lang)
+        """RapidOCR(언어별 모델)을 준비한다."""
+        if self._ocr is None:
+            self._ocr = new_rapidocr(self.lang)
 
     # ---------------- 공개 API (TableEngine 호환) ---------------- #
     def recognize_image_file(self, path: str) -> list[list[list[str]]]:
@@ -130,25 +81,11 @@ class UTHFixedEngine:
     # ---------------- 내부 ---------------- #
     def _boxes(self, bgr, ox, oy):
         out = []
-        if getattr(self, "_engine_type", "") == "rapidocr":
-            res = self._ocr(bgr)
-            if res is not None and getattr(res, "boxes", None) is not None and getattr(res, "txts", None) is not None:
-                boxes = res.boxes
-                texts = res.txts
-                scores = getattr(res, "scores", None) or [1.0] * len(texts)
-                for i, t in enumerate(texts):
-                    b = np.array(boxes[i])
-                    if b.ndim == 1:
-                        x1, y1, x2, y2 = map(float, b[:4])
-                    else:
-                        x1, y1 = float(b[:, 0].min()), float(b[:, 1].min())
-                        x2, y2 = float(b[:, 0].max()), float(b[:, 1].max())
-                    sc = float(scores[i]) if i < len(scores) else 1.0
-                    out.append((str(t).strip(), (x1 + x2) / 2 + ox, (y1 + y2) / 2 + oy, sc))
-            return out
-
-        for r in self._ocr.predict(bgr):
-            texts, boxes, scores = r["rec_texts"], r["rec_boxes"], r["rec_scores"]
+        res = self._ocr(bgr)
+        if res is not None and getattr(res, "boxes", None) is not None and getattr(res, "txts", None) is not None:
+            boxes = res.boxes
+            texts = res.txts
+            scores = getattr(res, "scores", None) or [1.0] * len(texts)
             for i, t in enumerate(texts):
                 b = np.array(boxes[i])
                 if b.ndim == 1:
@@ -156,7 +93,8 @@ class UTHFixedEngine:
                 else:
                     x1, y1 = float(b[:, 0].min()), float(b[:, 1].min())
                     x2, y2 = float(b[:, 0].max()), float(b[:, 1].max())
-                out.append((str(t).strip(), (x1 + x2) / 2 + ox, (y1 + y2) / 2 + oy, float(scores[i])))
+                sc = float(scores[i]) if i < len(scores) else 1.0
+                out.append((str(t).strip(), (x1 + x2) / 2 + ox, (y1 + y2) / 2 + oy, sc))
         return out
 
     @staticmethod

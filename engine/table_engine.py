@@ -1,12 +1,12 @@
 """
-표(테이블) 인식 엔진 - PaddleOCR TableRecognitionPipelineV2 기반.
+표(테이블) 인식 엔진 - RapidTable(ONNX) + RapidOCR(한국어는 PP-OCRv5 한글 모델) 기반.
 
 캡처된 표 이미지/PDF에서 표 구조(행·열·셀)를 인식하고, 각 셀의 텍스트를
 정확히 추출하여 2차원 격자(grid)로 복원한다. 결과는 GUI 격자 표시 및
 엑셀/CSV/TSV 내보내기에 사용된다.
 
-- 한글 셀 텍스트 정확도를 위해 언어별 인식 모델을 지정한다.
-- 표 구조는 pred_html(HTML <table>)로 나오며, 이를 직접 파싱해 격자로 만든다.
+- 한글 셀 텍스트 정확도를 위해 언어별 인식 모델을 지정한다(ocr_engine.rapidocr_params).
+- 표 구조는 pred_htmls(HTML <table>)로 나오며, 이를 직접 파싱해 격자로 만든다.
 """
 from __future__ import annotations
 
@@ -15,22 +15,13 @@ from html.parser import HTMLParser
 import numpy as np
 from PIL import Image
 
-from ocr_engine import rapidocr_params, paddle_fallback_error
+from ocr_engine import rapidocr_params, engine_error
 
 try:
     import pymupdf as fitz  # PyMuPDF (PDF 렌더링)
     _HAS_FITZ = True
 except Exception:  # pragma: no cover
     _HAS_FITZ = False
-
-
-# 화면 표시 언어 -> PaddleOCR 인식 모델명 (None이면 기본 모델 사용)
-LANG_REC_MODELS = {
-    "korean": "korean_PP-OCRv5_mobile_rec",
-    "en": "en_PP-OCRv5_mobile_rec",
-    "japan": "japan_PP-OCRv5_mobile_rec",
-    "ch": None,  # 기본 PP-OCRv5 모델(중국어+영어)
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -144,49 +135,17 @@ class TableEngine:
         self._pipe = None  # 지연 초기화
 
     def ensure_engine(self):
-        """파이프라인 준비 (RapidTable ONNX 우선, 실패 시 PaddleOCR 폴백)."""
+        """RapidTable ONNX 파이프라인 준비 (셀 글자는 RapidOCR 언어별 모델)."""
         if self._pipe is not None:
             return
-
-        # 1. 초경량·고속 RapidTable ONNX 파이프라인 우선 시도
         try:
             from rapid_table import RapidTable
             from rapid_table.utils import RapidTableInput
 
             cfg = RapidTableInput(ocr_params=rapidocr_params(self.lang))
             self._pipe = RapidTable(cfg=cfg)
-            self._engine_type = "rapid_table"
-            return
         except Exception as exc:
-            rapid_exc = exc
-
-        # 2. PaddleOCR 폴백
-        try:
-            from paddleocr import TableRecognitionPipelineV2
-        except ImportError:
-            raise paddle_fallback_error(rapid_exc) from rapid_exc
-        self._engine_type = "paddleocr"
-
-        kwargs = dict(
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,  # 180° 오분류로 인한 셀 뒤집힘/노이즈 방지
-            device="cpu",
-            enable_mkldnn=False,  # paddlepaddle 3.x oneDNN(PIR) 버그 회피 (필수)
-        )
-        rec_model = LANG_REC_MODELS.get(self.lang)
-        if rec_model:
-            kwargs["text_recognition_model_name"] = rec_model
-        # 미지원 파라미터(구버전)는 하나씩 제거하며 재시도
-        try:
-            self._pipe = TableRecognitionPipelineV2(**kwargs)
-        except TypeError:
-            kwargs.pop("use_textline_orientation", None)
-            try:
-                self._pipe = TableRecognitionPipelineV2(**kwargs)
-            except TypeError:
-                kwargs.pop("enable_mkldnn", None)
-                self._pipe = TableRecognitionPipelineV2(**kwargs)
+            raise engine_error(exc) from exc
 
     # ---------------------------- 공개 API ---------------------------- #
     def recognize_image_file(self, path: str) -> list[list[list[str]]]:
@@ -224,36 +183,11 @@ class TableEngine:
         self.ensure_engine()
         image_rgb = _upscale_if_small(image_rgb)   # 저해상도 표는 셀 검출이 어긋나므로 확대
 
-        # RapidTable ONNX 처리
-        if getattr(self, "_engine_type", "") == "rapid_table":
-            res = self._pipe(image_rgb)
-            tables: list[list[list[str]]] = []
-            for html in (getattr(res, "pred_htmls", None) or []):
-                if html:
-                    grid = html_table_to_grid(html)
-                    if grid:
-                        tables.append(grid)
-            return tables
-
-        image_bgr = np.ascontiguousarray(image_rgb[:, :, ::-1])  # RGB -> BGR
-        output = self._pipe.predict(image_bgr)
-
+        res = self._pipe(image_rgb)
         tables: list[list[list[str]]] = []
-        for res in output:
-            table_list = _get(res, "table_res_list") or []
-            for table in table_list:
-                html = _get(table, "pred_html")
-                if not html:
-                    continue
+        for html in (getattr(res, "pred_htmls", None) or []):
+            if html:
                 grid = html_table_to_grid(html)
                 if grid:
                     tables.append(grid)
         return tables
-
-
-def _get(obj, key):
-    """dict 유사 객체/일반 객체 모두에서 안전하게 값 추출."""
-    try:
-        return obj[key]
-    except Exception:
-        return getattr(obj, key, None)

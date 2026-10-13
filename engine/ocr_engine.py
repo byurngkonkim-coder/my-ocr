@@ -1,10 +1,10 @@
 """
-OCR 엔진 래퍼 (PaddleOCR 기반).
+OCR 엔진 래퍼 — RapidOCR(ONNX Runtime, 한국어는 PP-OCRv5 한글 모델) 하나만 쓴다.
 
 - 한글/영문 등 다국어 인식 지원
 - 이미지 파일과 PDF 파일 모두 처리
-- PaddleOCR 3.x(predict) / 2.x(ocr) API를 모두 지원하도록 방어적으로 작성
 - 한글 파일 경로 문제를 피하기 위해 이미지는 PIL로 읽어 numpy 배열로 전달
+- 예전 Paddle 계열 예비 엔진은 2026-10-13 제거 (본문·표·고정양식 모두 RapidOCR 로 일원화)
 """
 from __future__ import annotations
 
@@ -34,63 +34,36 @@ def rapidocr_params(lang: str):
     return {"Rec.ocr_version": rec[0], "Rec.lang_type": rec[1], "Rec.model_type": ModelType.MOBILE}
 
 
-def paddle_fallback_error(rapid_exc: Exception) -> RuntimeError:
-    """RapidOCR 실패 후 PaddleOCR 도 없을 때 — 'No module named paddleocr' 대신 진짜 원인을 알린다."""
+def engine_error(exc: Exception) -> RuntimeError:
+    """RapidOCR 를 준비하지 못했을 때 — 진짜 원인과 복구 방법을 알린다."""
     return RuntimeError(
-        f"OCR 엔진(RapidOCR)을 준비하지 못했습니다: {type(rapid_exc).__name__}: {rapid_exc}\n"
-        "(대체 엔진 PaddleOCR 도 설치되어 있지 않습니다. engine\\install.bat 을 다시 실행해 보세요.)")
+        f"OCR 엔진(RapidOCR)을 준비하지 못했습니다: {type(exc).__name__}: {exc}\n"
+        "(engine\\install.bat 을 다시 실행해 보세요.)")
+
+
+def new_rapidocr(lang: str):
+    """언어별 모델로 RapidOCR 을 만든다. 실패하면 원인을 담은 RuntimeError."""
+    try:
+        from rapidocr import RapidOCR
+        return RapidOCR(params=rapidocr_params(lang))
+    except Exception as exc:
+        raise engine_error(exc) from exc
 
 
 class OCREngine:
-    """PaddleOCR을 감싼 간단한 OCR 엔진."""
+    """RapidOCR 을 감싼 간단한 OCR 엔진."""
 
     def __init__(self, lang: str = "korean"):
         self.lang = lang
         self._ocr = None  # 지연 초기화 (첫 OCR 때 모델 로드)
-        self._engine_type = ""
 
     # ------------------------------------------------------------------ #
     # 엔진 초기화
     # ------------------------------------------------------------------ #
     def ensure_engine(self):
-        """OCR 엔진을 준비한다. ONNX Runtime 기반 RapidOCR을 우선 사용하고 실패 시 PaddleOCR로 폴백한다."""
-        if self._ocr is not None:
-            return
-
-        # 1. 고성능·경량 ONNX Runtime 기반 RapidOCR 우선 시도
-        try:
-            from rapidocr import RapidOCR
-            self._ocr = RapidOCR(params=rapidocr_params(self.lang))
-            self._engine_type = "rapidocr"
-            return
-        except Exception as exc:
-            rapid_exc = exc
-
-        # 2. PaddleOCR 폴백
-        try:
-            from paddleocr import PaddleOCR
-        except ImportError:
-            raise paddle_fallback_error(rapid_exc) from rapid_exc
-        self._engine_type = "paddleocr"
-        try:
-            self._ocr = PaddleOCR(
-                lang=self.lang,
-                use_textline_orientation=False,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                enable_mkldnn=False,
-            )
-            return
-        except TypeError:
-            pass
-
-        try:
-            self._ocr = PaddleOCR(lang=self.lang, use_angle_cls=True)
-            return
-        except TypeError:
-            pass
-
-        self._ocr = PaddleOCR(lang=self.lang)
+        """OCR 엔진(RapidOCR)을 준비한다."""
+        if self._ocr is None:
+            self._ocr = new_rapidocr(self.lang)
 
     # ------------------------------------------------------------------ #
     # 공개 API
@@ -175,87 +148,15 @@ class OCREngine:
     def _run(self, image_rgb: np.ndarray):
         """RGB numpy 이미지를 받아 [(text, score), ...] 반환."""
         self.ensure_engine()
-        if getattr(self, "_engine_type", "") == "rapidocr":
-            out = self._ocr(image_rgb)
-            lines = []
-            if out is not None and getattr(out, "txts", None):
-                txts = out.txts or ()
-                scores = out.scores or ()
-                for idx, text in enumerate(txts):
-                    if text and str(text).strip():
-                        s = _to_float(scores[idx]) if idx < len(scores) else 1.0
-                        lines.append((str(text).strip(), s))
-            return lines
-
-        # PaddleOCR(내부 OpenCV)은 BGR 순서를 기대하므로 채널 변환
-        image_bgr = np.ascontiguousarray(image_rgb[:, :, ::-1])
-
-        # 3.x: predict()
-        if hasattr(self._ocr, "predict"):
-            try:
-                result = self._ocr.predict(image_bgr)
-                return self._parse_v3(result)
-            except Exception:
-                pass  # 구버전 방식으로 폴백
-
-        # 2.x: ocr()
-        try:
-            result = self._ocr.ocr(image_bgr)
-        except TypeError:
-            result = self._ocr.ocr(image_bgr, cls=True)
-        return self._parse_v2(result)
-
-    @staticmethod
-    def _parse_v3(result):
-        """PaddleOCR 3.x predict() 결과 파싱.
-
-        결과는 dict 유사 객체의 리스트이며 'rec_texts', 'rec_scores' 키를 가진다.
-        """
+        out = self._ocr(image_rgb)
         lines = []
-        for res in (result or []):
-            texts = None
-            scores = None
-            try:
-                texts = res["rec_texts"]
-            except Exception:
-                texts = getattr(res, "rec_texts", None)
-            try:
-                scores = res["rec_scores"]
-            except Exception:
-                scores = getattr(res, "rec_scores", None)
-
-            if not texts:
-                continue
-            if not scores or len(scores) != len(texts):
-                scores = [None] * len(texts)
-
-            for text, score in zip(texts, scores):
-                if text is not None and str(text).strip():
-                    lines.append((str(text), _to_float(score)))
-        return lines
-
-    @staticmethod
-    def _parse_v2(result):
-        """PaddleOCR 2.x ocr() 결과 파싱.
-
-        형태: [page, ...], page = [[box, (text, score)], ...]
-        """
-        lines = []
-        if not result:
-            return lines
-        for page in result:
-            if not page:
-                continue
-            for item in page:
-                try:
-                    _box, (text, score) = item
-                except Exception:
-                    try:
-                        text, score = item[1][0], item[1][1]
-                    except Exception:
-                        continue
-                if text is not None and str(text).strip():
-                    lines.append((str(text), _to_float(score)))
+        if out is not None and getattr(out, "txts", None):
+            txts = out.txts or ()
+            scores = out.scores or ()
+            for idx, text in enumerate(txts):
+                if text and str(text).strip():
+                    s = _to_float(scores[idx]) if idx < len(scores) else 1.0
+                    lines.append((str(text).strip(), s))
         return lines
 
 
