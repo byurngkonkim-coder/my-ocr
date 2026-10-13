@@ -151,6 +151,15 @@ def _align_cell_boxes(boxes, logic):
     return out
 
 
+def _drop_leading_empty_rows(grid: list[list[str]]) -> list[list[str]]:
+    """맨 위 글자 없는 행을 지운다. 선 없는 표에서 SLANETPLUS 가 머리글 위에 빈 행을 하나 더 낸다
+    (합성 표 1장, 2026-10-14). 중간·맨 아래 빈 행은 빈 양식 칸일 수 있어 남긴다."""
+    i = 0
+    while i < len(grid) and not any(c.strip() for c in grid[i]):
+        i += 1
+    return grid[i:]
+
+
 # --------------------------------------------------------------------------- #
 # 표 인식 엔진
 # --------------------------------------------------------------------------- #
@@ -222,7 +231,7 @@ class TableEngine:
         tables: list[list[list[str]]] = []
         for html in (getattr(res, "pred_htmls", None) or []):
             if html:
-                grid = html_table_to_grid(html)
+                grid = _drop_leading_empty_rows(html_table_to_grid(html))
                 if grid:
                     tables.append(grid)
         return tables

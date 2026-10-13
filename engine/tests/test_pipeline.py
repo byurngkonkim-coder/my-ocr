@@ -145,6 +145,14 @@ def test_align_cell_boxes_to_columns():
     assert (out[0, 1::2].min(), out[0, 1::2].max()) == (67, 284)   # 세로 범위는 그대로
 
 
+def test_drop_leading_empty_rows():
+    # 선 없는 표에서 SLANETPLUS 가 맨 위에 글자 없는 행을 하나 더 낸다 — 맨 위만 지우고
+    # 중간·맨 아래 빈 행(빈 양식 칸)은 남긴다
+    grid = [["", "", ""], ["품목", "수량", "단가"], ["", "", ""], ["사과", "12", "1,500"], [" ", "", ""]]
+    assert table_engine._drop_leading_empty_rows(grid) == grid[1:]
+    assert table_engine._drop_leading_empty_rows([["", ""]]) == []
+
+
 def test_korean_refine_only_for_korean():
     lines = [("Route 66 Highway", 1.0)]
     assert ocr_engine.OCREngine("en")._refine_lines(lines) == lines
@@ -175,6 +183,7 @@ if __name__ == "__main__":
              test_korean_corrector_preserves, test_korean_corrector_fixes, test_unique_path,
              test_rapidocr_params_per_language, test_textline_angle_classifier_off,
              test_sample_table_cell_texts_read, test_align_cell_boxes_to_columns,
+             test_drop_leading_empty_rows,
              test_korean_refine_only_for_korean,
              test_engine_error_names_real_cause, test_rapidocr_is_the_only_engine, test_paths_anchoring]
     for t in tests:
