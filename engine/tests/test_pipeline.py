@@ -120,12 +120,29 @@ def test_textline_angle_classifier_off():
 
 
 def test_sample_table_cell_texts_read():
-    # 칸 글자는 모두 맞게 읽는다(방향 판별 끔). 머리글 '이름'·'부서' 칸 합쳐짐은 표 구조 모델(SLANETPLUS)
-    # 문제로 남은 과제 — 01_OCR docs/세션인수인계서_20261013_OCR엔진일원화.md 참조
+    # 칸 글자·칸 위치 모두 정확히(방향 판별 끔 + 열 기준 칸 상자 보정).
+    # 보정 전에는 SLANETPLUS 가 머리글 첫 칸 상자를 넓게 잡아 '이름 부서' 가 한 칸으로 합쳐졌다.
     grids = table_engine.TableEngine("korean").recognize_image_file(str(_ROOT / "samples" / "test_table.png"))
-    cells = " ".join(c for g in grids for row in g for c in row)
-    for word in ("이름", "부서", "직급", "연봉", "김철수", "영업부", "과장", "5500", "이영희", "개발팀", "대리", "4800"):
-        assert word in cells, (word, grids)
+    assert grids == [[["이름", "부서", "직급", "연봉"],
+                      ["김철수", "영업부", "과장", "5500"],
+                      ["이영희", "개발팀", "대리", "4800"]]], grids
+
+
+def test_align_cell_boxes_to_columns():
+    # 머리글 첫 칸 상자(30~890)가 둘째 열(676~)까지 덮어도, 같은 열 칸들의 가장자리로 바로잡는다
+    import numpy as np
+    boxes = np.array([[30, 67, 890, 67, 917, 284, 27, 283],
+                      [676, 27, 1426, 28, 1437, 291, 681, 294],
+                      [27, 280, 662, 280, 663, 554, 27, 555],
+                      [665, 280, 1330, 280, 1330, 554, 665, 555],
+                      [27, 560, 660, 560, 660, 830, 27, 830],
+                      [664, 560, 1332, 560, 1332, 830, 664, 830]], dtype=float)
+    logic = np.array([[0, 0, 0, 0], [0, 0, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1], [2, 2, 0, 0], [2, 2, 1, 1]])
+    out = table_engine._align_cell_boxes(boxes, logic)
+    assert out.shape == boxes.shape
+    assert (out[0, 0::2].min(), out[0, 0::2].max()) == (27, 663)   # 열 0: 왼쪽 중앙값 27, 오른쪽 중앙값 663
+    assert (out[1, 0::2].min(), out[1, 0::2].max()) == (665, 1332)
+    assert (out[0, 1::2].min(), out[0, 1::2].max()) == (67, 284)   # 세로 범위는 그대로
 
 
 def test_korean_refine_only_for_korean():
@@ -157,7 +174,8 @@ if __name__ == "__main__":
     tests = [test_imports, test_grid_to_tsv, test_combine_tables, test_korean_corrector,
              test_korean_corrector_preserves, test_korean_corrector_fixes, test_unique_path,
              test_rapidocr_params_per_language, test_textline_angle_classifier_off,
-             test_sample_table_cell_texts_read, test_korean_refine_only_for_korean,
+             test_sample_table_cell_texts_read, test_align_cell_boxes_to_columns,
+             test_korean_refine_only_for_korean,
              test_engine_error_names_real_cause, test_rapidocr_is_the_only_engine, test_paths_anchoring]
     for t in tests:
         t()

@@ -126,6 +126,31 @@ def _upscale_if_small(rgb: np.ndarray, min_side: int = 1000,
     return np.array(Image.fromarray(rgb).resize(new_size, Image.LANCZOS))
 
 
+def _align_cell_boxes(boxes, logic):
+    """칸 상자의 좌우 가장자리를 같은 논리 열 칸들의 중앙값으로 맞춘다.
+
+    SLANETPLUS 는 칸의 행·열(logic: [행시작, 행끝, 열시작, 열끝])은 맞게 내면서 상자 좌표를
+    어긋나게 낼 때가 있다(표 샘플 머리글 첫 칸 x=30~890 이 둘째 열 676~ 까지 덮음 → '이름 부서'
+    한 칸으로 합쳐짐, 2026-10-14). 같은 열 칸들은 가장자리가 같으므로 다수결로 바로잡는다.
+    세로 범위는 그대로 둔다.
+    """
+    boxes = np.asarray(boxes, dtype=float)
+    logic = np.asarray(logic)
+    if boxes.ndim != 2 or len(boxes) == 0 or logic.shape != (len(boxes), 4):
+        return boxes
+    x0, x1 = boxes[:, 0::2].min(1), boxes[:, 0::2].max(1)
+    y0, y1 = boxes[:, 1::2].min(1), boxes[:, 1::2].max(1)
+    left = {c: np.median(x0[logic[:, 2] == c]) for c in set(logic[:, 2].tolist())}
+    right = {c: np.median(x1[logic[:, 3] == c]) for c in set(logic[:, 3].tolist())}
+    out = boxes.copy()
+    for i, (_, _, c0, c1) in enumerate(logic.tolist()):
+        lx, rx = left[c0], right[c1]
+        if lx >= rx:
+            continue
+        out[i] = [lx, y0[i], rx, y0[i], rx, y1[i], lx, y1[i]] if boxes.shape[1] == 8 else [lx, y0[i], rx, y1[i]]
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 표 인식 엔진
 # --------------------------------------------------------------------------- #
@@ -143,7 +168,17 @@ class TableEngine:
             from rapid_table.utils import RapidTableInput
 
             cfg = RapidTableInput(ocr_params=rapidocr_params(self.lang))
-            self._pipe = RapidTable(cfg=cfg)
+            pipe = RapidTable(cfg=cfg)
+            structure = pipe.table_structure
+
+            def aligned_structure(imgs):
+                # 글자 상자를 칸에 짝짓기 전에 칸 상자를 열 기준으로 보정 (_align_cell_boxes 참조)
+                pred_structures, cell_bboxes = structure(imgs)
+                logic = pipe.table_matcher.decode_logic_points(pred_structures)
+                return pred_structures, [_align_cell_boxes(b, l) for b, l in zip(cell_bboxes, logic)]
+
+            pipe.table_structure = aligned_structure
+            self._pipe = pipe
         except Exception as exc:
             raise engine_error(exc) from exc
 
