@@ -110,7 +110,22 @@ def test_rapidocr_params_per_language():
     assert ocr_engine.rapidocr_params("korean")["Rec.lang_type"].name == "KOREAN"
     assert ocr_engine.rapidocr_params("en")["Rec.lang_type"].name == "EN"
     assert ocr_engine.rapidocr_params("japan")["Rec.lang_type"].name == "JAPAN"
-    assert ocr_engine.rapidocr_params("ch") is None
+    assert "Rec.lang_type" not in ocr_engine.rapidocr_params("ch")   # 기본(중국어+영어) 모델
+
+
+def test_textline_angle_classifier_off():
+    # 방향 판별(cls)이 짧은 단어를 뒤집힌 글자로 보고 180° 돌려 읽었다: '직급'→'큰', '연봉'→'움' (2026-10-13)
+    for lang in ("korean", "en", "japan", "ch"):
+        assert ocr_engine.rapidocr_params(lang)["Global.use_cls"] is False
+
+
+def test_sample_table_cell_texts_read():
+    # 칸 글자는 모두 맞게 읽는다(방향 판별 끔). 머리글 '이름'·'부서' 칸 합쳐짐은 표 구조 모델(SLANETPLUS)
+    # 문제로 남은 과제 — 01_OCR docs/세션인수인계서_20261013_OCR엔진일원화.md 참조
+    grids = table_engine.TableEngine("korean").recognize_image_file(str(_ROOT / "samples" / "test_table.png"))
+    cells = " ".join(c for g in grids for row in g for c in row)
+    for word in ("이름", "부서", "직급", "연봉", "김철수", "영업부", "과장", "5500", "이영희", "개발팀", "대리", "4800"):
+        assert word in cells, (word, grids)
 
 
 def test_korean_refine_only_for_korean():
@@ -141,7 +156,8 @@ def test_paths_anchoring():
 if __name__ == "__main__":
     tests = [test_imports, test_grid_to_tsv, test_combine_tables, test_korean_corrector,
              test_korean_corrector_preserves, test_korean_corrector_fixes, test_unique_path,
-             test_rapidocr_params_per_language, test_korean_refine_only_for_korean,
+             test_rapidocr_params_per_language, test_textline_angle_classifier_off,
+             test_sample_table_cell_texts_read, test_korean_refine_only_for_korean,
              test_engine_error_names_real_cause, test_rapidocr_is_the_only_engine, test_paths_anchoring]
     for t in tests:
         t()

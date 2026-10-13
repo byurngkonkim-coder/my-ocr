@@ -21,17 +21,21 @@ except Exception:  # pragma: no cover
 
 
 def rapidocr_params(lang: str):
-    """언어별 RapidOCR 인식 모델 설정. None 이면 기본 모델(중국어+영어).
+    """언어별 RapidOCR 설정. 인식 모델을 정하지 않은 언어('ch')는 기본 모델(중국어+영어).
 
     OCREngine·TableEngine·UTHFixedEngine 이 함께 쓴다. 일본어는 PP-OCRv5 모델이 없어 v4.
+    글자 방향 판별(cls)은 끈다 — 짧은 단어를 뒤집힌 글자로 보고 180° 돌려 읽었다
+    (표 샘플 '직급'→'큰'·'연봉'→'움', 12칸 중 6칸만 맞음 → 끄면 12칸 모두. 2026-10-13).
+    예전 Paddle 계열 경로는 방향 판별을 끄고(use_textline_orientation=False) 있었다.
     """
     from rapidocr.utils.typings import OCRVersion, LangRec, ModelType
+    params = {"Global.use_cls": False}
     rec = {"korean": (OCRVersion.PPOCRV5, LangRec.KOREAN),
            "en": (OCRVersion.PPOCRV5, LangRec.EN),
            "japan": (OCRVersion.PPOCRV4, LangRec.JAPAN)}.get((lang or "").lower())
-    if rec is None:
-        return None
-    return {"Rec.ocr_version": rec[0], "Rec.lang_type": rec[1], "Rec.model_type": ModelType.MOBILE}
+    if rec is not None:
+        params.update({"Rec.ocr_version": rec[0], "Rec.lang_type": rec[1], "Rec.model_type": ModelType.MOBILE})
+    return params
 
 
 def engine_error(exc: Exception) -> RuntimeError:
