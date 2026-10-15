@@ -128,7 +128,9 @@ MyOCR/
   ```
   engine\venv\Scripts\python.exe engine\tests\test_pipeline.py
   engine\venv\Scripts\python.exe engine\tests\test_text_refiner.py
+  python -m pytest engine\tests\test_korean_corrector.py -q
   ```
+  마지막 줄(한글 교정기 회귀 테스트)은 pytest 가 필요해 pytest 가 깔린 Python 으로 돌립니다.
 
 ## 참고
 
@@ -136,4 +138,4 @@ MyOCR/
   — 한글 인식 모델 `korean_PP-OCRv5_mobile_rec`. 본문·표·고정양식 모두 이 엔진 하나만 씁니다
   (예전 PaddleOCR 예비 엔진은 2026-10-13 제거).
 - 한글 교정기 `korean_corrector.py` 는 `01_OCR_스캔파일텍스트추출프로그램`·`파일형식변환기_MD` 와 같은 파일입니다.
-  고칠 때는 세 곳을 함께 맞춰 주세요.
+  고칠 때는 세 곳과 각 저장소의 교정기 회귀 테스트를 함께 맞춰 주세요(2026-10-16 기준 세 곳이 같은 내용).
