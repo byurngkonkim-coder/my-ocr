@@ -7,12 +7,15 @@ LLM(Gemini) 없이 동작하는 결정론 단계만 옮겨 왔다. 함수 본문
 - 문장 정제: 쪽번호·반복 머리글/꼬리말 제거, 쪽 안의 끊긴 줄 잇기, 쪽 경계에서 끊긴 문장 잇기
 - 부속물 삭제: 선두의 차례, 선두·말미의 판권(간기)·도서 광고 제거
   (표제지·헌사·약력처럼 형태가 뚜렷하지 않은 앞부속은 원본에서도 LLM이 처리 — 여기선 남는다)
+- OCR 잡음·단락 규칙(noise_rules.py): 01 의 core/noise_rules.py 를 바이트 그대로 복사(2026-10-16).
+  01 '비용 우선(내장 정제규칙)' 경로와 같은 순서로 부른다 — 고칠 때는 01 원본을 고치고 다시 복사한다.
 """
 from __future__ import annotations
 
 import re
 
 import korean_corrector
+import noise_rules
 
 # 문장이 '깔끔히' 끝났는지 판단
 _SENT_END = re.compile(r'[.!?…。！？”’"\'\)\]》」』]\s*$')
@@ -21,19 +24,35 @@ _SENT_END = re.compile(r'[.!?…。！？”’"\'\)\]》」』]\s*$')
 def refine_pages(pages: list[str], drop_matter: bool = False) -> tuple[str, list[str]]:
     """쪽별 텍스트 → (정제된 전체 본문, 사람용 보고 줄들)."""
     # 빈 쪽도 남겨 두어 보고의 쪽 번호가 PDF 쪽과 맞게
-    pages = [remove_noise_lines(normalize_chars((p or "").strip())) for p in pages]
+    # 잡음 줄·기호·전각 부호·깨진 번호·끊긴 영어 줄 (01 noise_rules — LLM 없이 거르는 OCR 잡음)
+    pages = [remove_noise_lines(noise_rules.clean_page(normalize_chars((p or "").strip()))) for p in pages]
     notes: list[str] = []
     if drop_matter:   # 빈 쪽을 남겨 이후 보고(잡음 쪽)의 쪽 번호도 PDF 쪽과 맞게
-        pages, notes = strip_book_matter(pages, keep_empty=True)
+        pages = noise_rules.drop_book_matter_rules(pages, notes)   # 표지·저자 소개·광고·저작권·차례
+        pages, matter = strip_book_matter(pages, keep_empty=True)
+        notes += matter
     pages = strip_page_numbers(pages)
     pages = strip_running_headers(pages)
+    pages, n_hdr = noise_rules.strip_fuzzy_headers(pages)
+    if n_hdr:
+        notes.append(f"깨져 읽힌 머리글 {n_hdr}곳 자동 제거")
+    # 출처 표기 명언집: 줄 잇기 전에 '명언 → 저자 출처' 그룹 경계를 고정(번호를 못 읽은 항목 포함)
+    pages, _ = noise_rules.group_attributed_quotes(pages)
     pages = drop_noise_pages(pages, notes)
     pages = [join_broken_lines(fix_hyphenated_words(p)) for p in pages]
     text, _ = rejoin_split_sentences("\n\n".join(p for p in pages if p.strip()))
+    text = noise_rules.finish_groups(text)              # 그룹 경계 표지 → 빈 줄(줄 잇기가 끝난 뒤)
+    text, _ = noise_rules.repair_quote_brackets(text)   # 인용 괄호 〈〉「」『』 짝 복원
+    text, _ = noise_rules.split_language_lines(text)    # 한 줄에 붙은 한글·영어 문장 가르기
+    if noise_rules.is_numbered_book(text):              # 번호 붙은 항목 책(명언집)만 — 일반 문서 표·목록 보호
+        text, _ = noise_rules.redistribute_number_stacks(text)
+        text, _ = noise_rules.paragraph_entries(text)
     # 줄을 이은 뒤 문서 전체를 근거로 쪼개진 어절 결합 ('사 실은'→'사실은') — 파일형식변환기_MD 처럼
     # 교정을 줄 잇기 뒤에 돌린다. OCR 줄 단위 교정은 줄 사이에서 끊긴 어절을 볼 수 없다.
     text = korean_corrector.fix_split_tokens(text, document_corpus=text)
     text = fix_punctuation_spacing(text)
+    # noise_rules 보고의 '원문 사본' 안내는 01 전용(MyOCR 는 사본을 남기지 않는다 — '문장 정제'를 끄면 원문)
+    notes = [n.replace(" (정제 전 원문 사본에서 확인 가능)", "") for n in notes]
     return re.sub(r'\n{3,}', '\n\n', text).strip(), notes
 
 

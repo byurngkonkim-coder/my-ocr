@@ -250,10 +250,18 @@ def test_fix_punctuation_spacing():
 
 # ── 통합 ──
 def test_refine_pages_end_to_end():
-    pages = [f"{i + 1}\n본문 {i}쪽의 첫 줄은 길게 이어지고\n다음 줄에서 끝난다.\n{H}" for i in range(6)]
+    # 쪽마다 본문이 달라야 한다 — 모든 쪽에 같은 문장이 되풀이되면 noise_rules.strip_fuzzy_headers 가
+    # 깨진 머리글로 보고 지운다(실제 책에선 본문이 쪽마다 같지 않다)
+    bodies = [("아침 햇살이 창문으로 들어오고", "고양이가 기지개를 켰다."),
+              ("시장 골목의 상인들이 물건을 펼치고", "손님을 부르기 시작했다."),
+              ("오래된 서점 주인이 먼지를 털고", "새로 들어온 책을 꽂았다."),
+              ("강가 산책로를 따라 자전거가 달리고", "물새가 날아올랐다."),
+              ("학교 운동장에서 아이들이 공을 차고", "선생님이 호루라기를 불었다."),
+              ("저녁 무렵 부엌에서 국이 끓고", "식구들이 하나둘 모였다.")]
+    pages = [f"{i + 1}\n{a}\n{b}\n{H}" for i, (a, b) in enumerate(bodies)]
     text, notes = tr.refine_pages(pages)
     assert H in text and text.count(H) == 1           # 첫 등장만 보존
-    assert "본문 0쪽의 첫 줄은 길게 이어지고 다음 줄에서 끝난다." in text
+    assert "아침 햇살이 창문으로 들어오고 고양이가 기지개를 켰다." in text
     assert "\n1\n" not in f"\n{text}\n" and notes == []
 
 
