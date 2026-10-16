@@ -255,6 +255,80 @@ def _join_word_per_line(lines: list[str]) -> list[str]:
     return out
 
 
+# ── 문서 단위: 쪽번호 ──────────────────────────────────────────────────────────
+# 실측(2026-10-17, 02_결과 21권 대조): 디지털 PDF·OCR 쪽 끝 줄의 쪽번호('61', '…운명 16 | 1000 WISE …')가
+# 쪽을 이을 때 다음 쪽 첫 줄에 붙어 '61 어떤 단계에서든'·'그러 23 니'로 남았다(길을묻는그대에게 83곳 등 6권 300여 곳).
+# 쪽 가장자리 숫자 가운데 이웃 쪽(앞뒤 3쪽 안) 2곳 이상과 '떨어진 쪽 수만큼 정확히' 차이 나는 것만 쪽번호다 —
+# 항목 번호는 쪽마다 여러 개씩 뛴다(1001가지기독교명언: 쪽당 약 3개 — 오차를 2까지 두자 항목 번호 128줄을 뗐다).
+# 0으로 시작하는 번호('001')는 항목 번호라 보지 않는다.
+# 자리 세 가지만 본다 — 숫자만 있는 줄 / 줄 끝('…수 있다 87'·'PART 2 버림을… 53') / 줄 머리 + 반복 머리글
+# ('44 실리콘벨리천재들의 생각아포리즘'). 줄 머리 숫자 뒤가 본문이면 항목 번호('273 인간들을…')라 보지 않는다.
+# 괄호·따옴표·'·' 에 붙은 숫자('(5) 절약'·'‘17'' ·차례 '·69')는 본문·차례다
+_PNO_BARE_RE = re.compile(r"^\s*\|?\s*([1-9]\d{0,3})\s*\|?\s*$")
+_PNO_END_RE = re.compile(r"(?<=[^\d\s(\[‘'\"“·][\s|])\s*\|?\s*([1-9]\d{0,3})\s*\|?\s*$")
+_PNO_HEAD_RE = re.compile(r"^\s*\|?\s*([1-9]\d{0,3})\s*\|?\s+(?=\S)")
+_PAGE_NO_EDGE = 2       # 쪽 맨 위·맨 아래 이만큼의 줄에서만 찾는다
+_PAGE_NO_REACH = 3      # 이만큼 떨어진 쪽까지 짝을 찾는다
+_PAGE_NO_PAIRS = 2      # 짝이 이만큼 있어야 쪽번호
+# 장·부 표지 뒤 숫자는 쪽번호가 아니다('PART 2' — 실리콘밸리 실측)
+_PNO_LABEL_RE = re.compile(r"(?:PART|Part|part|CHAPTER|Chapter|STEP|Step|No\.?|제)\s*$")
+_RUNNING_MIN_PAGES = 3  # 줄 머리 숫자 뒤 글이 이만큼의 쪽 가장자리에 되풀이되면 머리글
+
+
+def _edge_lines(page: str) -> tuple[list[str], list[int]]:
+    lines = page.split("\n")
+    idx = [i for i, l in enumerate(lines) if l.strip()]
+    return lines, sorted(set(idx[:_PAGE_NO_EDGE] + idx[-_PAGE_NO_EDGE:]))
+
+
+def _running_key(text: str) -> str:
+    return re.sub(r"[^가-힣A-Za-z]", "", text)[:20]
+
+
+def _page_no_candidates(page: str, running: set[str] = frozenset()) -> list[tuple[int, int, int, int]]:
+    """(줄 번호, 시작, 끝, 값) — 쪽 가장자리 줄의 쪽번호 후보."""
+    lines, edge = _edge_lines(page)
+    out = []
+    for i in edge:
+        line = lines[i]
+        for rx in (_PNO_BARE_RE, _PNO_END_RE):
+            if m := rx.search(line):
+                if not _PNO_LABEL_RE.search(line[:m.start()]):
+                    out.append((i, m.start(), m.end(), int(m.group(1))))
+                break
+        else:
+            m = _PNO_HEAD_RE.match(line)
+            if m and len(_running_key(line[m.end():])) >= 4 and _running_key(line[m.end():]) in running:
+                out.append((i, m.start(), m.end(), int(m.group(1))))
+    return out
+
+
+def strip_page_numbers(pages: list[str]) -> tuple[list[str], int]:
+    """이웃 쪽과 번호가 쪽 순서대로 이어지는 가장자리 숫자를 뗀다. 비게 된 줄은 지운다."""
+    seen: dict[str, int] = {}
+    for p in pages:
+        lines, edge = _edge_lines(p)
+        for k in {_running_key(re.sub(r"\d", "", lines[i])) for i in edge}:
+            seen[k] = seen.get(k, 0) + 1
+    running = {k for k, c in seen.items() if c >= _RUNNING_MIN_PAGES and len(k) >= 4}
+    cands = [_page_no_candidates(p, running) for p in pages]
+    vals = [{c[3] for c in cs} for cs in cands]
+    out, n = [], 0
+    near = lambda k: (j for j in range(max(0, k - _PAGE_NO_REACH), min(len(pages), k + _PAGE_NO_REACH + 1)) if j != k)
+    for k, (page, cs) in enumerate(zip(pages, cands)):
+        # 쪽 j 의 번호가 이 쪽 번호와 정확히 (j - k) 만큼 차이 나는 쪽이 2곳 이상이면 쪽번호
+        drop = [c for c in cs if sum(c[3] + (j - k) in vals[j] for j in near(k)) >= _PAGE_NO_PAIRS]
+        if not drop:
+            out.append(page)
+            continue
+        lines = page.split("\n")
+        for i, s, e, _ in sorted(drop, key=lambda c: (c[0], -c[1])):   # 같은 줄은 뒤에서부터
+            lines[i] = (lines[i][:s].rstrip() + " " + lines[i][e:].lstrip()).strip()
+            n += 1
+        out.append("\n".join(l for i, l in enumerate(lines) if l.strip() or i not in {c[0] for c in drop}))
+    return out, n
+
+
 # ── 문서 단위: 깨진 러닝헤더 ─────────────────────────────────────────────────────
 _GRAM = 4
 _HEADER_MIN_SPAN = 8       # 머리글로 지울 구간의 최소 글자(한글·영문) 수('천재■의생각아포리즘' 9자)
@@ -505,8 +579,16 @@ def drop_book_matter_rules(pages: list[str], notes: list[str]) -> list[str]:
 # 실측(기독교명언 43~50): OCR 이 항목 번호 44·47·48·49 를 아예 읽지 못했다. 원문은 줄 구조
 # '명언 줄 → 一저자(생몰년), 직함 → 성경의 진리 상자'가 살아 있으나, 줄 잇기가 저자 줄·상자·다음 명언을
 # 한 줄로 이어 그룹이 사라졌다. 저자 출처 줄 바로 앞 명언 줄(앞의 주제어·번호 포함)에서 단락을 연다.
-_ATTR_LINE_RE = re.compile(r"^\s*[-一—–~_]?\s?[가-힣A-Za-z][가-힣A-Za-z.·' ]{1,30}\(\s?\d{3,4}\s?[-—–]")
-_ATTR_BOOK_MIN = 30        # 출처 줄이 이만큼 있는 책에서만(일반 문서의 '홍길동(1950-2010)' 줄 보호)
+# 두 꼴: '一이름(1932-)' / '• 한글이름 Latin Name, 1706~1790.'(괄호 없음 — 대한민국CEO명언집 90줄 실측)
+_ATTR_LATIN_RE = re.compile(
+    # 이름은 한글 낱말 3개까지('헨리 프레데리크 아미엘') — 넉 낱말 이상이면 명언 끝에 이름이 붙은 줄이다
+    r"^\s*[-一—–~_•·]?\s?[가-힣·]{2,14}(?: [가-힣·]{1,12}){0,2}\s?[A-Z][A-Za-z.'’\- ]{2,40},?\s*(?:BC\s?)?\d{2,4}\s?[-~—–]")
+_ATTR_LINE_RE = re.compile(
+    r"^\s*[-一—–~_]?\s?[가-힣A-Za-z][가-힣A-Za-z.·' ]{1,30}\(\s?\d{3,4}\s?[-—–]|" + _ATTR_LATIN_RE.pattern)
+_ATTR_LEAD_RE = re.compile(r"^\s*[-一—–~_•·]?\s?")
+_ATTR_INLINE_RE = re.compile(
+    r"(?<=[가-힣.!?”\"'’])\s+(?=[-•·]?\s?[가-힣]{2,14}\s?[A-Z][A-Za-z.'’\- ]{2,40},\s?(?:BC\s?)?\d{2,4}\s?[-~—–])")
+_ATTR_BOOK_MIN = 30       # 출처 줄이 이만큼 있는 책에서만(일반 문서의 '홍길동(1950-2010)' 줄 보호)
 # 그룹 경계 표지 줄 — 빈 줄은 뒤의 '끊긴 문장 잇기'가 건너뛰어 다시 붙인다(앞 그룹 끝 성경 상자가
 # OCR 에서 '…(창'처럼 잘려 미완결 문장으로 보임). 줄 잇기가 끝난 뒤 finish_groups 가 빈 줄로 바꾼다
 GROUP_MARK = "⟨GROUP⟩"
@@ -519,12 +601,25 @@ def group_attributed_quotes(pages: list[str]) -> tuple[list[str], int]:
         return pages, 0
     out, n = [], 0
     for p in pages:
-        lines = p.split("\n")
+        # OCR 줄 잇기가 명언 끝에 붙인 저자 줄을 이름 앞 띄어쓰기에서 다시 나눈다
+        # ('…파고든다 새뮤얼테일러클리지Samuel Taylor Coleridge,1772-1834' — 대한민국CEO명언집 실측)
+        lines = [s for l in p.split("\n")
+                 for s in (l if _ATTR_LINE_RE.match(l) else _ATTR_INLINE_RE.sub("\n", l)).split("\n")]
+        # 'Latin 이름' 꼴 저자 줄은 원문 표지 '•'를 '- '로 남긴다 — 표지를 지우면 마침표 없이 끝난 명언 줄에
+        # 줄 잇기가 저자 줄을 다시 붙였다
+        lines = [_ATTR_LEAD_RE.sub("- ", l, count=1) if _ATTR_LATIN_RE.match(l) else l for l in lines]
         res: list[str] = []
         for i, l in enumerate(lines):
             nxt = lines[i + 1] if i + 1 < len(lines) else ""
             if l.strip() and _ATTR_LINE_RE.match(nxt) and not _ATTR_LINE_RE.match(l):
                 j = len(res)
+                if _ATTR_LATIN_RE.match(nxt):
+                    # 여러 줄 명언은 통째로 한 그룹 — 앞 그룹의 저자 줄·그 설명 줄(저자 줄 다음, 마침표로 끝남
+                    # '…저술을 남겼다.')·빈 줄에서 멈춘다(6줄까지)
+                    while (j > 0 and len(res) - j < 6 and res[j - 1].strip()
+                           and not _ATTR_LINE_RE.match(res[j - 1])
+                           and not (j > 1 and _ATTR_LINE_RE.match(res[j - 2]) and res[j - 1].rstrip().endswith("."))):
+                        j -= 1
                 # 바로 앞의 항목 번호 줄·짧은 주제어 줄('경건함', '고난')은 이 그룹의 머리
                 while j > 0 and res[j - 1].strip() and (
                         re.fullmatch(r"\s*\d{1,4}\s*", res[j - 1])
