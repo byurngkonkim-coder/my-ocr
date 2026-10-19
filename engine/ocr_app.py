@@ -30,6 +30,7 @@ except ImportError:
 from table_engine import TableEngine
 from ocr_engine import OCREngine
 from uth_fixed_engine import UTHFixedEngine
+import book_layout
 import exporters
 import text_refiner
 
@@ -260,25 +261,38 @@ class TableOCRApp:
             return
         lang = LANG_OPTIONS[self.lang_var.get()]
         if self.loaded_kind == "folder":
-            batch_mode = self.mode_var.get() if self.mode_var.get() in ("table", "uth") else "table"
             self._set_busy(True, "폴더 일괄 처리 준비 중...")
             self._set_export_enabled(False)
+            if self.mode_var.get() == "plain":
+                threading.Thread(target=self._worker_batch_text,
+                                 args=(self.loaded_path, lang, self._refine_opts()), daemon=True).start()
+                return
+            batch_mode = self.mode_var.get() if self.mode_var.get() in ("table", "uth") else "table"
             threading.Thread(target=self._worker_batch,
                              args=(self.loaded_path, lang, False, batch_mode), daemon=True).start()
             return
         self._set_busy(True, "인식 준비 중...")
         self._set_export_enabled(False)
         mode = self.mode_var.get()
-        refine = (self.refine_var.get(), self.refine_var.get() and self.matter_var.get())
+        refine = self._refine_opts()
         threading.Thread(target=self._worker,
                          args=(self.loaded_path, self.loaded_kind, mode, lang, refine),
                          daemon=True).start()
 
+    def _refine_opts(self):
+        """(문장 정제, 부속물 삭제) — 부속물 삭제는 문장 정제가 켜져 있을 때만."""
+        return (self.refine_var.get(), self.refine_var.get() and self.matter_var.get())
+
     def open_folder_batch(self, folder=None):
-        folder = folder or filedialog.askdirectory(title="이미지 폴더 선택 (일괄 표 추출)")
+        plain = self.mode_var.get() == "plain"
+        folder = folder or filedialog.askdirectory(
+            title="PDF 폴더 선택 (일괄 텍스트 추출)" if plain else "이미지 폴더 선택 (일괄 표 추출)")
         if not folder:
             return
         import batch
+        if plain:
+            self._open_folder_text(folder, batch.discover_pdfs(folder))
+            return
         files = batch.discover_images(folder, recursive=False)
         if not files:
             messagebox.showinfo(
@@ -305,11 +319,34 @@ class TableOCRApp:
         threading.Thread(target=self._worker_batch,
                          args=(folder, lang, False, mode), daemon=True).start()
 
-    def _show_folder_preview(self, folder, count):
+    def _open_folder_text(self, folder, files):
+        """일반 텍스트 모드의 폴더 일괄: PDF 마다 결과\\이름_텍스트.txt (+ 문장 정제 시 .md)."""
+        if not files:
+            messagebox.showinfo("알림", "선택한 폴더에 PDF 파일이 없습니다.")
+            return
+        refine = self._refine_opts()
+        if not messagebox.askyesno(
+                "폴더 일괄 처리",
+                f"'{os.path.basename(folder)}' 폴더의 PDF {len(files)}개에서 텍스트를 추출해\n"
+                f"파일마다 결과 폴더에 저장합니다.\n\n"
+                f"· 모드: 일반 텍스트 / 언어: {self.lang_var.get()}\n"
+                f"· 문장 정제: {'켬 (TXT + MD)' if refine[0] else '끔 (TXT)'}\n"
+                f"· 스캔 PDF 는 쪽마다 OCR 하므로 시간이 오래 걸립니다.\n\n계속할까요?"):
+            return
+        self.loaded_path = folder
+        self.loaded_kind = "folder"
+        self._show_folder_preview(folder, len(files), "PDF")
+        self.run_btn.config(state=tk.NORMAL)
+        self._set_busy(True, "폴더 일괄 처리 준비 중...")
+        self._set_export_enabled(False)
+        threading.Thread(target=self._worker_batch_text,
+                         args=(folder, LANG_OPTIONS[self.lang_var.get()], refine), daemon=True).start()
+
+    def _show_folder_preview(self, folder, count, unit="이미지"):
         self.preview_imgtk = None
         self.preview_label.config(
             image="",
-            text=f"\n\n📁 폴더 일괄 처리\n\n{os.path.basename(folder)}\n\n이미지 {count}개")
+            text=f"\n\n📁 폴더 일괄 처리\n\n{os.path.basename(folder)}\n\n{unit} {count}개")
 
     def _worker_batch(self, folder, lang, recursive, mode="table"):
         try:
@@ -359,6 +396,33 @@ class TableOCRApp:
         finally:
             self.msg_queue.put(("done", None))
 
+    def _worker_batch_text(self, folder, lang, refine=(True, False)):
+        try:
+            import batch
+            self._prepare_engine("plain", lang)
+            files = batch.discover_pdfs(folder)
+            saved: list[str] = []
+            errors: list[str] = []
+            for idx, path in enumerate(files, 1):
+                name = os.path.basename(path)
+                try:
+                    text, _, md = self._worker_plain(path, "pdf", *refine, label=f"[{idx}/{len(files)}] {name} — ")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                    continue
+                if text:
+                    note = self._auto_save(f"{os.path.splitext(name)[0]}_텍스트", text, md)
+                    if "실패" in note:
+                        errors.append(f"{name}: {note.strip(' ·⚠')}")
+                    else:
+                        saved.append(name)
+            self.msg_queue.put(("status", f"완료 - PDF {len(files)}개 중 {len(saved)}개 결과 폴더에 저장"
+                                + self._error_note(errors)))
+        except Exception as exc:  # noqa: BLE001
+            self.msg_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+        finally:
+            self.msg_queue.put(("done", None))
+
     def _worker(self, path, kind, mode, lang, refine=(False, False)):
         try:
             self._prepare_engine(mode, lang)
@@ -372,10 +436,10 @@ class TableOCRApp:
                 else:
                     self.msg_queue.put(("status", "완료 - 표 0개" + self._size_note(mode, [path])))
             else:
-                text, notes = self._worker_plain(path, kind, *refine)
-                saved = self._auto_save(f"{base}_텍스트", text) if text else ""
+                text, notes, md = self._worker_plain(path, kind, *refine)
+                saved = self._auto_save(f"{base}_텍스트", text, md) if text else ""
                 self.msg_queue.put(("status", "완료" + saved +
-                                    (" — 삭제: " + " / ".join(notes) if notes else "")))
+                                    (" — " + " / ".join(notes) if notes else "")))
         except Exception as exc:  # noqa: BLE001
             self.msg_queue.put(("error", f"{type(exc).__name__}: {exc}"))
         finally:
@@ -439,11 +503,17 @@ class TableOCRApp:
                 "표를 찾지 못했습니다.\n\n· 표 테두리가 뚜렷한 이미지를 사용해 보세요.\n"
                 "· '일반 텍스트' 모드로도 시도해 볼 수 있습니다."))
 
-    def _worker_plain(self, path, kind, refine=False, drop_matter=False):
-        """일반 텍스트 인식. (결과 텍스트, 부속물 삭제 보고 줄 목록)을 돌려준다."""
+    def _worker_plain(self, path, kind, refine=False, drop_matter=False, label=""):
+        """일반 텍스트 인식. (결과 텍스트, 보고 줄 목록, MD 또는 None)을 돌려준다.
+        PDF + 문장 정제: 여백 제거 → 차례 기준 장·절 정비 → 정제 (book_layout) — TXT 와 MD 둘 다.
+        label: 상태줄 앞머리(폴더 일괄의 '[3/10] 이름.pdf — ')."""
+        def prog(cur, total):
+            self.msg_queue.put(("status", f"{label}OCR 진행 중...  {cur}/{total} 페이지"))
+        if kind == "pdf" and refine:
+            md, text, notes = book_layout.pdf_to_text(self.text_engine, path, drop_matter, prog)
+            self.msg_queue.put(("plain", md or "(인식된 텍스트가 없습니다.)"))
+            return text, notes, md
         if kind == "pdf":
-            def prog(cur, total):
-                self.msg_queue.put(("status", f"OCR 진행 중...  {cur}/{total} 페이지"))
             pages = self.text_engine.ocr_pdf(path, progress_cb=prog)
         else:
             self.msg_queue.put(("status", "OCR 진행 중..."))
@@ -463,7 +533,7 @@ class TableOCRApp:
         else:
             text = page_texts[0]
         self.msg_queue.put(("plain", text or "(인식된 텍스트가 없습니다.)"))
-        return text, notes
+        return text, notes, None
 
     @staticmethod
     def _error_note(errors):
@@ -482,21 +552,19 @@ class TableOCRApp:
         return (f"   ·   ⚠ 1788×892 가 아닌 캡처 {len(bad)}개({os.path.basename(bad[0])} 등) "
                 "— 열이 어긋날 수 있으니 '검토필요' 열을 확인하세요")
 
-    def _auto_save(self, base, data):
-        """인식 결과를 결과/ 폴더에 자동 저장. 표 목록 → .xlsx, 문자열 → .txt.
+    def _auto_save(self, base, data, md=None):
+        """인식 결과를 결과/ 폴더에 자동 저장. 표 목록 → .xlsx, 문자열 → .txt (md 가 있으면 .md 도).
         상태줄에 붙일 문구를 돌려준다. 저장 실패는 인식 결과를 막지 않도록 문구로만 알린다."""
-        ext = "txt" if isinstance(data, str) else "xlsx"
         try:
             os.makedirs(RESULT_DIR, exist_ok=True)
-            path = exporters.unique_path(os.path.join(RESULT_DIR, f"{base}.{ext}"))  # 이전 결과는 덮어쓰지 않는다
-            if ext == "txt":
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(data + "\n")
+            if isinstance(data, str):
+                paths = exporters.save_texts(os.path.join(RESULT_DIR, base), data, md)
             else:
-                exporters.save_grids_to_xlsx(data, path)
+                paths = [exporters.unique_path(os.path.join(RESULT_DIR, f"{base}.xlsx"))]  # 이전 결과는 덮어쓰지 않는다
+                exporters.save_grids_to_xlsx(data, paths[0])
         except Exception as exc:  # noqa: BLE001
             return f"   ·   ⚠ 자동 저장 실패: {exc}"
-        return f"   ·   결과 저장: 결과\\{os.path.basename(path)}"
+        return "   ·   결과 저장: " + ", ".join(f"결과\\{os.path.basename(p)}" for p in paths)
 
     # ------------------------------------------------------------------ #
     # 결과 렌더링

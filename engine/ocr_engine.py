@@ -77,7 +77,7 @@ class OCREngine:
             return lines
         try:
             from korean_corrector import refine_korean_text
-            return [(refine_korean_text(text), score) for text, score in lines]
+            return [(refine_korean_text(line[0]), *line[1:]) for line in lines]   # 좌표가 붙은 줄도 그대로
         except Exception:
             return lines
 
@@ -94,13 +94,16 @@ class OCREngine:
         lines = self._run(rgb)
         return self._refine_lines(lines) if refine else lines
 
-    def ocr_pdf(self, path: str, dpi: int = 200, progress_cb=None, force_ocr: bool = False, refine: bool = True):
+    def ocr_pdf(self, path: str, dpi: int = 200, progress_cb=None, force_ocr: bool = False, refine: bool = True,
+                with_boxes: bool = False):
         """PDF 파일 -> 페이지별 [[(text, score), ...], ...]
 
         progress_cb(current_page, total_pages) 콜백으로 진행 상황을 알린다.
         force_ocr=False이면 텍스트 레이어가 있는 디지털 PDF 페이지는 OCR 없이
         PyMuPDF 내장 텍스트를 즉시 반환하여 불필요한 연산과 지연을 방지한다.
         refine=True이면 한국어 띄어쓰기, 맞춤법 및 OCR 노이즈 정제 규칙을 자동 적용한다.
+        with_boxes=True이면 쪽마다 {"w", "h", "lines": [(text, score, (x0, y0, x1, y1)), ...]} 를
+        돌려준다 — 여백(머리말·꼬리말) 판정용 줄 위치. 텍스트 PDF는 PDF 좌표(pt), 스캔 쪽은 렌더 픽셀.
         """
         if not _HAS_FITZ:
             raise RuntimeError(
@@ -119,14 +122,18 @@ class OCREngine:
                 if not force_ocr:
                     raw_text = page.get_text("text").strip()
                     if len("".join(raw_text.split())) >= 20:
-                        lines = []
-                        for line in raw_text.splitlines():
-                            l_str = line.strip()
-                            if l_str:
-                                lines.append((l_str, 1.0))
+                        if with_boxes:
+                            lines = _text_layer_lines(page)
+                        else:
+                            lines = []
+                            for line in raw_text.splitlines():
+                                l_str = line.strip()
+                                if l_str:
+                                    lines.append((l_str, 1.0))
                         if refine:
                             lines = self._refine_lines(lines)
-                        pages.append(lines)
+                        pages.append({"w": page.rect.width, "h": page.rect.height, "lines": lines}
+                                     if with_boxes else lines)
                         if progress_cb:
                             progress_cb(i + 1, total)
                         continue
@@ -136,10 +143,11 @@ class OCREngine:
                 rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                     pix.height, pix.width, 3
                 )
-                page_lines = self._run(np.ascontiguousarray(rgb))
+                page_lines = self._run(np.ascontiguousarray(rgb), with_boxes)
                 if refine:
                     page_lines = self._refine_lines(page_lines)
-                pages.append(page_lines)
+                pages.append({"w": pix.width, "h": pix.height, "lines": page_lines}
+                             if with_boxes else page_lines)
                 if progress_cb:
                     progress_cb(i + 1, total)
             return pages
@@ -149,19 +157,37 @@ class OCREngine:
     # ------------------------------------------------------------------ #
     # 내부 실행/파싱
     # ------------------------------------------------------------------ #
-    def _run(self, image_rgb: np.ndarray):
-        """RGB numpy 이미지를 받아 [(text, score), ...] 반환."""
+    def _run(self, image_rgb: np.ndarray, with_boxes: bool = False):
+        """RGB numpy 이미지를 받아 [(text, score), ...] 반환. with_boxes=True 면 (text, score, (x0, y0, x1, y1))."""
         self.ensure_engine()
         out = self._ocr(image_rgb)
         lines = []
         if out is not None and getattr(out, "txts", None):
             txts = out.txts or ()
             scores = out.scores or ()
+            boxes = out.boxes if out.boxes is not None else ()
             for idx, text in enumerate(txts):
                 if text and str(text).strip():
                     s = _to_float(scores[idx]) if idx < len(scores) else 1.0
-                    lines.append((str(text).strip(), s))
+                    if with_boxes:
+                        pts = np.asarray(boxes[idx]) if idx < len(boxes) else np.zeros((1, 2))
+                        box = (float(pts[:, 0].min()), float(pts[:, 1].min()),
+                               float(pts[:, 0].max()), float(pts[:, 1].max()))
+                        lines.append((str(text).strip(), s, box))
+                    else:
+                        lines.append((str(text).strip(), s))
         return lines
+
+
+def _text_layer_lines(page) -> list[tuple[str, float, tuple[float, float, float, float]]]:
+    """텍스트 PDF 쪽의 줄 → [(text, 1.0, bbox), ...] (get_text('text') 와 같은 읽기 순서)."""
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
+            if text:
+                lines.append((text, 1.0, tuple(float(v) for v in line["bbox"])))
+    return lines
 
 
 def _to_float(value):

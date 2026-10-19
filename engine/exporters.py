@@ -15,6 +15,23 @@ def unique_path(path: str) -> str:
     return path
 
 
+def save_texts(base_path: str, txt: str, md: str | None = None) -> list[str]:
+    """확장자 없는 base_path 에 .txt (md 가 있으면 .md 도) 를 UTF-8 로 저장하고 경로들을 돌려준다.
+    이전 결과는 덮어쓰지 않는다 — 두 파일이 모두 비어 있는 '_2'·'_3' 번호를 골라 짝을 맞춘다."""
+    files = [("txt", txt)] + ([("md", md)] if md is not None else [])
+    stem, n = base_path, 2
+    while any(os.path.exists(f"{stem}.{ext}") for ext, _ in files):
+        stem = f"{base_path}_{n}"
+        n += 1
+    paths = []
+    for ext, data in files:
+        path = f"{stem}.{ext}"
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(data + "\n")
+        paths.append(path)
+    return paths
+
+
 def grid_to_tsv(grid: list[list[str]]) -> str:
     """격자 -> 탭 구분 문자열 (엑셀/시트에 바로 붙여넣기 가능)."""
     return "\n".join("\t".join(cell.replace("\t", " ") for cell in row) for row in grid)

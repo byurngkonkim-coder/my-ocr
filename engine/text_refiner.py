@@ -21,8 +21,10 @@ import noise_rules
 _SENT_END = re.compile(r'[.!?…。！？”’"\'\)\]》」』]\s*$')
 
 
-def refine_pages(pages: list[str], drop_matter: bool = False) -> tuple[str, list[str]]:
-    """쪽별 텍스트 → (정제된 전체 본문, 사람용 보고 줄들)."""
+def refine_pages(pages: list[str], drop_matter: bool = False, structure=None) -> tuple[str, list[str]]:
+    """쪽별 텍스트 → (정제된 전체 본문, 사람용 보고 줄들).
+    structure(pages) -> pages: 쪽번호·머리글을 뗀 뒤, 줄 잇기 전에 부르는 구조 정비
+    (book_layout.mark_headings — 차례 제목을 '# 제목' 줄로). 제목 줄은 아래 줄 잇기에서 붙이지 않는다."""
     # 빈 쪽도 남겨 두어 보고의 쪽 번호가 PDF 쪽과 맞게
     # 잡음 줄·기호·전각 부호·깨진 번호·끊긴 영어 줄 (01 noise_rules — LLM 없이 거르는 OCR 잡음)
     pages = [remove_noise_lines(noise_rules.clean_page(normalize_chars((p or "").strip()))) for p in pages]
@@ -36,6 +38,8 @@ def refine_pages(pages: list[str], drop_matter: bool = False) -> tuple[str, list
     pages, n_hdr = noise_rules.strip_fuzzy_headers(pages)
     if n_hdr:
         notes.append(f"깨져 읽힌 머리글 {n_hdr}곳 자동 제거")
+    if structure is not None:
+        pages = structure(pages)
     # 출처 표기 명언집: 줄 잇기 전에 '명언 → 저자 출처' 그룹 경계를 고정(번호를 못 읽은 항목 포함)
     pages, _ = noise_rules.group_attributed_quotes(pages)
     pages = drop_noise_pages(pages, notes)
@@ -171,7 +175,7 @@ def join_broken_lines(text: str) -> str:
             continue
         while i + 1 < len(lines):
             nxt = lines[i + 1]
-            if not nxt.strip():
+            if not nxt.strip() or _MD_HEADING_RE.match(cur) or _MD_HEADING_RE.match(nxt):
                 break
             # 지금까지 이은 줄이 아니라 '현재 물리적 줄'(lines[i])이 끝까지 찼는지를 본다
             if (len(lines[i].strip()) >= full and not _LIST_START_RE.match(nxt.strip())
@@ -237,6 +241,9 @@ def _glue(before: str, after: str) -> str:
     return " "
 
 
+_MD_HEADING_RE = re.compile(r'^#{1,6} \S')
+
+
 def rejoin_split_sentences(text: str) -> tuple[str, int]:
     """문장이 끝나지 않은 긴 줄과 이어지는 한글 줄을 한 문장으로 잇는다. (텍스트, 이은 수)."""
     lines = text.split("\n")
@@ -252,7 +259,9 @@ def rejoin_split_sentences(text: str) -> tuple[str, int]:
             if j >= len(lines):
                 break
             s, nxt = cur.rstrip(), lines[j].strip()
-            bound = bool(s) and re.search(r'[가-힣]$', s) is not None and _starts_bound(nxt)
+            if _MD_HEADING_RE.match(s) or _MD_HEADING_RE.match(nxt):   # 장·절 제목 줄(book_layout)
+                break
+            bound =bool(s) and re.search(r'[가-힣]$', s) is not None and _starts_bound(nxt)
             if bound:   # 끊긴 어미·조사 — 한 단어가 잘린 것이니 공백 없이 잇는다
                 cur = s + nxt
                 joined += 1

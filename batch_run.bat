@@ -22,8 +22,8 @@ rem --- 폴더 인자(드래그앤드롭) 또는 선택 대화상자 ---
 set "TARGET=%~1"
 
 if not defined TARGET (
-  echo 이미지 폴더 선택 창을 엽니다...
-  for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='이미지가 들어있는 폴더를 선택하세요'; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Out.Write($d.SelectedPath)}"`) do set "TARGET=%%I"
+  echo 이미지 또는 PDF 폴더 선택 창을 엽니다...
+  for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='이미지(표) 또는 PDF(텍스트)가 들어있는 폴더를 선택하세요'; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Out.Write($d.SelectedPath)}"`) do set "TARGET=%%I"
 )
 
 if not defined TARGET (
@@ -34,7 +34,7 @@ if not defined TARGET (
 
 echo.
 echo 대상 폴더: "%TARGET%"
-echo 표 일괄 추출 처리 중... (이미지가 많으면 수 분 소요될 수 있습니다)
+echo 일괄 추출 처리 중... 이미지 폴더는 표, PDF 폴더는 텍스트로 추출합니다. 파일이 많으면 오래 걸립니다.
 echo.
 "%PY%" %TARGET_SCRIPT% "%TARGET%"
 echo.

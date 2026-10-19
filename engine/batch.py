@@ -20,21 +20,26 @@ def _natural_key(name: str):
             for tok in re.split(r"(\d+)", name)]
 
 
-def discover_images(folder: str, recursive: bool = False) -> list[str]:
-    """폴더에서 이미지 파일 경로 목록을 자연 정렬 순으로 반환."""
+def discover_images(folder: str, recursive: bool = False, exts=IMAGE_EXTS) -> list[str]:
+    """폴더에서 이미지(exts 확장자) 파일 경로 목록을 자연 정렬 순으로 반환."""
     paths: list[str] = []
     if recursive:
         for root, _dirs, files in os.walk(folder):
             for f in files:
-                if os.path.splitext(f)[1].lower() in IMAGE_EXTS:
+                if os.path.splitext(f)[1].lower() in exts:
                     paths.append(os.path.join(root, f))
     else:
         for f in os.listdir(folder):
             p = os.path.join(folder, f)
-            if os.path.isfile(p) and os.path.splitext(f)[1].lower() in IMAGE_EXTS:
+            if os.path.isfile(p) and os.path.splitext(f)[1].lower() in exts:
                 paths.append(p)
     paths.sort(key=lambda p: _natural_key(os.path.basename(p)))
     return paths
+
+
+def discover_pdfs(folder: str, recursive: bool = False) -> list[str]:
+    """폴더에서 PDF 파일 경로 목록 (일반 텍스트 일괄 처리용)."""
+    return discover_images(folder, recursive, {".pdf"})
 
 
 def _rows_equal(a: list[str], b: list[str]) -> bool:
