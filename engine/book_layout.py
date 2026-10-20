@@ -159,25 +159,50 @@ def strip_margins(pages: list[dict]) -> tuple[list[dict], int]:
 
 
 # ── 2. 단락 경계 ──────────────────────────────────────────────────────────────
-_SENT_END_RE = re.compile(r'[.!?…。”’"\'」』)]\s*$')
 _PARA_GAP_RATIO = 0.6        # 위 줄과 '보통 줄 간격 + 줄 높이의 이 배수' 이상 떨어지면 새 단락(절 사이 빈 줄)
-_INDENT_RATIO = 0.6          # 앞뒤 줄보다 줄 높이의 이만큼 이상 들여 쓰면 단락 첫 줄
+# 들여쓰기 문단 판정 — 01 rapidocr_engine 과 같은 기준(2026-10-18 실측: 문턱 0.6h 는 문단 시작 76곳 중 35곳만 잡음)
+INDENT_MIN = 0.4             # 문단 첫 줄 들여쓰기 최소(줄 높이 배수)
+INDENT_MAX = 3.5
+MARGIN_TOL = 0.3             # 왼쪽 여백에 붙은 줄로 보는 흔들림(줄 높이 배수)
+_SENT_END_LINE = re.compile(r'[.?!。！？]["”’\'」』)]*$')
 
 
 def _overlap_x(a, b) -> bool:
     return min(a[2], b[2]) > max(a[0], b[0])
 
 
+def _geometry(lines, hm: float) -> dict:
+    """쪽의 왼쪽 여백·오른쪽 끝 — 넓은 줄(가장 넓은 줄의 80%↑) 가운데 가장 왼쪽에 몰린 줄들로 여백을 잡는다.
+    들여 쓴 인용 단락 줄이 섞이면 중앙값이 오른쪽으로 밀려 본문 줄이 '여백 아님'이 됐다(01 2천년의강의 실측)."""
+    x0 = [_box(l)[0] for l in lines]
+    x1 = [_box(l)[2] for l in lines]
+    full = max((b - a for a, b in zip(x0, x1)), default=0) * 0.8
+    wide = [i for i in range(len(lines)) if x1[i] - x0[i] >= full] or list(range(len(lines)))
+    left = min(x0[i] for i in wide)
+    margin = median([x0[i] for i in wide if x0[i] <= left + 0.5 * hm])
+    return {"margin": margin, "right": median([x1[i] for i in wide]),
+            "at_margin": [abs(x - margin) < MARGIN_TOL * hm for x in x0]}
+
+
 def page_texts(pages: list[dict]) -> list[str]:
-    """쪽마다 줄을 잇되, 간격이 크게 벌어지거나 들여 쓴 단락 첫 줄 앞에 빈 줄을 넣는다.
-    들여쓰기는 앞 줄이 문장으로 끝났거나 짧게 끝났을 때만 믿는다(기울어진 스캔은 줄마다 x 가 흔들린다)."""
+    """쪽마다 줄을 잇되, 간격이 크게 벌어지거나 들여 쓴 단락 첫 줄 앞에 빈 줄을 넣는다(01 과 같은 들여쓰기 기준).
+    들여쓰기 문단이 있는 쪽에서는 꽉 찬 줄이 마침표로 끝나고 다음 줄이 들여쓰기 없이 이어지면 같은 단락으로
+    한 줄에 잇는다 — 글자만 보는 줄 잇기는 줄 끝 마침표에서 늘 단락을 끊었다(01 표본 37쪽 18곳)."""
     out = []
     for p in pages:
         lines = p["lines"]
         hs = [_height(l) for l in lines if len(l[0]) >= 5]
         hm = median(hs) if hs else 0
-        right = max((_box(l)[2] for l in lines), default=0)
         usual = max(0.0, _usual_gap(lines))
+        g = _geometry(lines, hm) if lines and hm else None
+        starts = set()
+        if g:
+            for i in range(1, len(lines)):
+                prev, b = _box(lines[i - 1]), _box(lines[i])
+                prev_ok = g["at_margin"][i - 1] or prev[2] < g["right"] - 2 * hm
+                if (INDENT_MIN * hm <= b[0] - g["margin"] <= INDENT_MAX * hm and b[2] >= g["right"] - hm
+                        and prev_ok and _overlap_x(prev, b)):
+                    starts.add(i)
         buf: list[str] = []
         dropcap = ""
         for i, l in enumerate(lines):
@@ -187,14 +212,15 @@ def page_texts(pages: list[dict]) -> list[str]:
                 continue
             if i and hm:
                 prev, b = _box(lines[i - 1]), _box(l)
-                nxt = _box(lines[i + 1]) if i + 1 < len(lines) else None
                 same_col = _overlap_x(prev, b)
-                gap = same_col and b[1] - prev[3] >= usual + hm * _PARA_GAP_RATIO
-                base = min(prev[0], nxt[0]) if nxt and _overlap_x(nxt, b) else prev[0]
-                ended = _SENT_END_RE.search(lines[i - 1][0]) or prev[2] < right - hm * 2
-                indent = same_col and b[0] - base >= hm * _INDENT_RATIO and ended
-                if gap or indent:
+                gap_px = b[1] - prev[3]
+                if (same_col and gap_px >= usual + hm * _PARA_GAP_RATIO) or i in starts:
                     buf.append("")
+                elif (starts and g and buf and buf[-1] and prev[2] >= g["right"] - hm
+                      and (g["at_margin"][i - 1] or i - 1 in starts) and _SENT_END_LINE.search(lines[i - 1][0].rstrip())
+                      and g["at_margin"][i] and gap_px <= max(1.5 * usual, usual + 0.3 * hm)):
+                    buf[-1] = buf[-1].rstrip() + " " + l[0].strip()   # 줄 끝 마침표 — 같은 단락
+                    continue
             # 장식 첫 글자(드롭캡): 크게 따로 읽힌 '현' + 다음 줄 '실에 대한 …' → '현실에 대한 …' ('50'+'여 년 전')
             if hm and re.fullmatch(r'[가-힣A-Z]|\d{1,2}', l[0]) and _height(l) >= hm * 1.5 and i + 1 < len(lines):
                 dropcap = l[0]

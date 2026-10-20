@@ -1,5 +1,5 @@
 """noise_rules 테스트 — 01_OCR_스캔파일텍스트추출프로그램 engine/tests/test_noise_rules.py 를 옮겨 왔다
-(2026-10-16 명언집 5권 실측 사례). 본문은 원본과 같고 import·실행부만 MyOCR 방식이다."""
+(2026-10-16 명언집 5권 실측 사례, 2026-10-20 재동기화). 본문은 원본과 같고 import·실행부만 MyOCR 방식이다."""
 import sys
 from pathlib import Path
 
@@ -8,6 +8,7 @@ if str(_ENGINE) not in sys.path:
     sys.path.insert(0, str(_ENGINE))
 
 import noise_rules as nr
+
 
 
 def test_garbage_lines_removed_but_numbers_and_words_kept():
@@ -59,6 +60,17 @@ def test_garbled_running_headers_removed_without_body_loss():
     assert all("아포리" not in p for p in out)
     assert out[0].splitlines() == ["0100 기회는 준비된 사람에게 온다 (0)"]
     assert out[-1] == "그렇지 않다면 당"
+
+
+def test_fuzzy_header_removal_keeps_body_words():
+    # 가장자리에 자주 오는 이름('아이젠하워')이 머리글 조각으로 배워져 본문 낱말·문장 가운데를 지우던 것
+    long = "그는 부하들을 아꼈고 동료들과도 잘 지냈다. 그런가 하면 " * 3
+    pages = [f"{100 + i} 아이젠하워는 장군이었다\n{long}\n쪽 {i} 끝" for i in range(8)]
+    pages.append(f"첫 줄\n둘째 줄\n가운데 문단 아이젠하워에게는 자석 같은 매력이 있었다\n셋째 줄\n넷째 줄")
+    pages.append(f"{long}아이젠하워는 장군이었다 하는 말이 문단 가운데에 있다. {long}")
+    out, _ = nr.strip_fuzzy_headers(pages)
+    assert "아이젠하워에게는 자석" in out[-2]
+    assert "아이젠하워는 장군이었다 하는 말이" in out[-1]
 
 
 def test_part_header_with_page_number_removed_mid_line():
@@ -199,6 +211,22 @@ def test_classical_chinese_quote_lines_kept():
     assert nr.clean_page(page).splitlines()[1] == "學而時習之 不亦說乎"
 
 
+def test_long_classical_lines_and_leading_hanja_words_kept():
+    # 한자 낱말 3개↑ 한문 줄을 낱말 품질 미달로 지우던 것(손자병법 실측: 한자 184→74자)
+    for line in ("學而時習之 不亦說乎 有朋自遠方來",
+                 "夫未戰而廟算勝者, 得算多也. 未戰而廟算不勝者, 得算少也.",
+                 "知彼知己 百戰不殆 不知彼而知己 一勝一負",
+                 "夫, 未戰而廟算勝者, 得算多也. 未戰而廟算不勝者, 得算少",
+                 "也.多算勝, 少算不勝, 而況於無算乎.吾以此觀之, 勝負見矣."):
+        assert nr.clean_page(line) == line
+    # 줄 앞 한자 낱말·줄바꿈으로 갈린 한자 병기의 뒷부분
+    assert nr.clean_page("佛經, 현실을 꿀맛 젖은 사형수에 비유") == "佛經, 현실을 꿀맛 젖은 사형수에 비유"
+    assert nr.clean_page("인재(人\n災)란 점이 밝혀졌습니다.") == "인재(人\n災)란 점이 밝혀졌습니다."
+    # 괄호 없는 한자 병기(로컬 한자 읽기 결과) — 한글 뒤·한글 사이
+    assert "般若心經" in nr.clean_page("불교의 «반야심경般若心經 외에 다른 것이 별로 없을 것이다.")
+    assert "新井白石" in nr.clean_page("손자해석가의 한 사람인 아라이하쿠세 키新井白石가 그의 책에서 남긴 말")
+
+
 def test_number_repairs_do_not_touch_ordinary_text():
     assert nr.clean_page("혈중 O2 농도가 낮아졌다") == "혈중 O2 농도가 낮아졌다"
     assert nr.clean_page("만족도 척도 1 2 3 4 5 중 하나를 고른다") == "만족도 척도 1 2 3 4 5 중 하나를 고른다"
@@ -330,6 +358,50 @@ def test_low_quality_line_keeps_real_sentence():
 def test_short_number_runs_are_not_paragraphed():
     text = "1984년에 3. 가지 원칙과 2 3 4 를 말했다."
     assert nr.paragraph_entries(text) == (text, 0)
+
+
+def test_strip_page_numbers_follows_page_sequence():
+    # 쪽 끝 쪽번호(이웃 쪽과 1씩 이어짐)만 뗀다 — 2026-10-17 길을묻는그대에게 '61 어떤 단계에서든' 실측
+    pages = [f"본문 {k}쪽 문장이다.\n그러" + ("\n" if k % 2 else " 길을 묻는 그대에게 ") + str(60 + k) for k in range(5)]
+    out, n = nr.strip_page_numbers(pages)
+    assert n == 5
+    assert all(not o.rstrip().endswith(str(60 + k)) for k, o in enumerate(out))
+    assert out[1].endswith("그러") and out[0].endswith("그러 길을 묻는 그대에게")
+
+
+def test_strip_page_numbers_keeps_item_numbers_and_labels():
+    # 쪽마다 항목이 3개씩 — 숫자만 있는 항목 번호 줄은 쪽 순서와 맞지 않아 남긴다(1001가지기독교명언 실측)
+    items = ["\n".join([str(3 * k + 1), "명언 하나", str(3 * k + 2), "명언 둘", str(3 * k + 3)]) for k in range(5)]
+    assert nr.strip_page_numbers(items) == (items, 0)
+    # 장 표지 'PART 2'·괄호 숫자·줄 머리 항목 번호는 쪽번호가 아니다
+    words = ["인간들을 볼 때면", "나 여기 있어", "진실은 진실된", "용서란 타인에게", "다른 식당에 갔다면"]
+    pages = [f"PART {k}\n본문 문장\n({k}) 항목\n{100 + k} {words[k]}" for k in range(5)]
+    assert nr.strip_page_numbers(pages) == (pages, 0)
+
+
+def test_latin_attribution_lines_open_groups_and_stay_apart():
+    # '• 한글이름 Latin Name, 1706~1790.' 꼴 저자 줄(괄호 없음) — 대한민국CEO명언집 실측 2026-10-17
+    attr = "• 벤저민 프랭클린 Benjamin Franklin, 1706~1790. 미국의 정치가."
+    page = "\n".join(["정의가 없는 용기는", "나약하기 짝이 없다.", attr,
+                      "충고는 하늘에서 내리는 눈과 같다",
+                      "마음 깊은곳까지 파고든다 새뮤얼테일러클리지Samuel Taylor Coleridge,1772-1834, 영국의 시인."])
+    out, n = nr.group_attributed_quotes([page] * 30)
+    lines = out[0].split("\n")
+    assert "- 벤저민 프랭클린 Benjamin Franklin, 1706~1790. 미국의 정치가." in lines      # 표지 '- '로 남김
+    assert "- 새뮤얼테일러클리지Samuel Taylor Coleridge,1772-1834, 영국의 시인." in lines   # 붙은 저자 줄 분리
+    # 두 줄 명언은 통째로 한 그룹 — 그룹 표지는 둘째 명언 머리에만
+    assert lines.index(nr.GROUP_MARK) == lines.index("충고는 하늘에서 내리는 눈과 같다") - 1
+
+
+def test_year_followed_by_word_starting_with_won_is_not_price():
+    # '1770-1823 원수가'(원수=元帥)를 책값으로 보고 본문 쪽을 '다른 책 광고'로 지우던 것(감사 27번)
+    body = ("아우스터리츠 전투는 지금의 체코에서 벌어졌는데, 다부Louis-Nicolas Davout, 1770-1823 원수가 "
+            "110킬로미터의 거리를 이틀 만에 강행군으로 돌파해서 전장에 도착했다. 『손자병법』 옮김 322쪽.")
+    pages = [body] * 40
+    out = nr.drop_book_matter_rules(pages, [])
+    assert out[3] == body
+    ad = "경영의 실제 | 피터 드러커 지음 | 이재규 옮김 | 15,000원"
+    assert nr.drop_book_matter_rules([ad] + [body] * 39, [])[0] == ""
 
 
 if __name__ == "__main__":

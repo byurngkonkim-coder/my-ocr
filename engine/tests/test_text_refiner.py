@@ -285,6 +285,38 @@ def test_refine_pages_drop_matter_reports():
     assert "ISBN" not in text and "차례" not in text and len(notes) == 2
 
 
+# ── 01 단락·줄바꿈 규칙 이식(2026-10-20) ──────────────────────────────────────
+
+def test_page_boundary_joins_short_unfinished_sentence():
+    # 쪽 끝 '…결단을 반복' / 다음 쪽 '하고 있는 것은 왜일까?' — 빈 줄로만 잇던 때는 단락으로 갈렸다(1분의사결정)
+    text, _ = tr.refine_pages(["그는 이렇게 많은 사람들이 그토록 어리석은 결단을 반복",
+                               "하고 있는 것은 왜일까? 하고 자문했다."])
+    assert text == "그는 이렇게 많은 사람들이 그토록 어리석은 결단을 반복 하고 있는 것은 왜일까? 하고 자문했다."
+
+
+def test_page_boundary_keeps_heading_and_item_lines():
+    assert tr.post_process_pagebreaks(f"끝나지 않은 문장의\n{tr.PAGEBREAK}\n4 지난 일은 지나가게\n본문") \
+        == "끝나지 않은 문장의\n\n4 지난 일은 지나가게\n본문"
+    assert tr.post_process_pagebreaks(f"첫째 항목의 설명이 이어지는\n{tr.PAGEBREAK}\n2. 둘째 항목") \
+        == "첫째 항목의 설명이 이어지는\n2. 둘째 항목"
+
+
+def test_join_broken_lines_stops_before_item_lines():
+    long = "가" * 30
+    assert tr.join_broken_lines(f"{long}\n① 첫째\n{long}\n제2조 둘째") == f"{long}\n① 첫째\n{long}\n제2조 둘째"
+
+
+def test_join_wrapped_glues_word_split_mid_word():
+    # 붙여 잇기 표(data/wrap_nospace.txt, 01 과 같은 파일)에 있는 쌍은 붙이고 나머지는 띄운다
+    pair = next(iter(tr._wrap_nospace()))
+    assert tr._join_wrapped("가" * 5 + pair[0], pair[1] + "나") == "가" * 5 + pair + "나"
+    assert tr._join_wrapped("문장이다", "다음") == "문장이다 다음"
+
+
+def test_unify_paragraph_breaks():
+    assert tr.unify_paragraph_breaks("첫 단락\n둘째 단락\n\n\n셋째\n- 저자 줄") == "첫 단락\n\n둘째 단락\n\n셋째\n- 저자 줄"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for t in tests:

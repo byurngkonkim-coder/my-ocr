@@ -86,7 +86,7 @@ _NUM_UNIT_RE = re.compile(rf"\d[%㎝㎞㎏㎎℃]?{_UNIT}(?![가-힣])|\d{_UNIT}
 # 띄어 쓴 표 머리 낱말('합 계'·'의 견') — 이 목록만 본문으로 본다('돈 나' 같은 잡음 조각 제외)
 _SPACED_HEADER_RE = re.compile(r"^(?:합 계|총 계|소 계|의 견|총 평|비 고|구 분|항 목|내 용|평 가|점 수|순 위|합 산)$")
 # 본문 토큰 꼴: 한자 병기 '건(件)', 숫자+한글 '2016년'·'1%만', 동그라미 숫자 '③PT', 한자+조사 '甲이'
-_CONTENT_TOKEN_RE = re.compile(rf"\([一-鿿]+\)|\d[%㎝㎞㎏㎎℃]?{_UNIT}|\d%[가-힣]|[①-⑳]|^[一-鿿]+[가-힣]{{1,2}}[.,:]?$")
+_CONTENT_TOKEN_RE = re.compile(rf"\([一-鿿]+(?:\)|$)|\d[%㎝㎞㎏㎎℃]?{_UNIT}|\d%[가-힣]|[①-⑳]|^[一-鿿]+[가-힣]{{1,2}}[.,:]?$")
 
 
 def _is_junk_token(t: str) -> bool:
@@ -94,12 +94,16 @@ def _is_junk_token(t: str) -> bool:
     ('그 사람은'의 '그')·정상 표기('[표1]', '것:')는 본문으로 둔다."""
     if re.search(r"[가-힣]{2}|[A-Za-z]{3}|^\d{1,4}[.,]?$", t) or _CONTENT_TOKEN_RE.search(t):
         return False
+    # 한자 낱말('佛經,')·줄바꿈으로 갈린 한자 병기의 뒷부분('災)란')은 본문
+    if re.search(r"[一-鿿]{2}", t) or re.match(r"^[一-鿿]+\)", t):
+        return False
     if re.search(r"[가-힣]", t):
         return not all(_OK_CHAR_RE.match(c) for c in t)
     return True
 
 
-_GOOD_TOKEN_RE = re.compile(r"[가-힣]{2}|[A-Za-z]{3}|^\d+[.,]?$")
+# 한자 2자↑ 낱말도 정상 — 한문 원문 줄('知彼知己 百戰不殆 …')을 품질 미달로 지우던 것 보호
+_GOOD_TOKEN_RE = re.compile(r"[가-힣]{2}|[A-Za-z]{3}|[一-鿿]{2}|^\d+[.,]?$")
 
 
 def _low_word_quality(line: str) -> bool:
@@ -154,7 +158,8 @@ def _is_noise_token(t: str) -> bool:
     # 한문 인용·한자 병기는 본문: '患人之不知己…也).”', '건(件)', '사(意思)’가'
     if re.fullmatch(r"[(\[“\"‘']?[一-鿿]{2,}[)\]”\"’'.,]*", t) or _CONTENT_TOKEN_RE.search(t):
         return False
-    if re.search(r"[가-힣]{2}", t):      # 한글 낱말이 있으면 토큰은 남기고 앞뒤 잡음만 뗀다(_strip_token_edges)
+    # 한글 사이에 괄호 없이 낀 한자 낱말('세키新井白石가'가 띄어 읽혀 생긴 '키新井白石가')도 본문
+    if re.search(r"[가-힣]{2}", t) or re.search(r"[가-힣][一-鿿]{2,}|[一-鿿]{2,}[가-힣]", t):  # 한글 낱말이 있으면 토큰은 남기고 앞뒤 잡음만 뗀다(_strip_token_edges)
         return False
     hanja = len(_HANJA_RE.findall(t))
     bad = sum(1 for c in t if not _OK_CHAR_RE.match(c)) - hanja
@@ -162,17 +167,35 @@ def _is_noise_token(t: str) -> bool:
     return (not good and bool(bad or hanja)) or (bad + hanja >= 2 and bad + hanja >= len(t) / 2)
 
 
+# 한자 + 조사·서술격 조사('法이다"라고'·'道이고,'·'時制는계절의'·'較(교)와') — 로컬 OCR 이 한자를 읽게 된 뒤
+# (core.hanja_reader, 2026-10-18) 생긴 정상 표기. OCR 이 뒤 낱말을 붙여 읽어도('險易은험함과') 본문이다.
+# 잡음에 흔한 한 획 글자 하나('一오스틴'·'乂가족')와 조사로 시작하지 않는 것('臣麗因주기도문은')은 여전히 뗀다
+_HANJA_WORD_RE = re.compile(r"^(?:[一-鿿]{2,}|(?![一乂卜丶丨亅])[一-鿿])(?:\([가-힣]+\))?"
+                            r"(?:이다|이고|이며|이라|이란|라고|라는|란|으로|에서|에게|은|는|이|가|을|를|의|에|와|과|로|도|만)")
+
+
 def _strip_token_edges(t: str, keep_guil: bool = False) -> str:
     """'一오스틴' → '오스틴', '臣麗因주기도문은' → '주기도문은' (한글 어절 앞뒤에 붙은 한자·기호).
     keep_guil: 줄에 짝 맞는 '«…»'가 있으면 '«»'는 떼지 않는다."""
-    if not re.search(r"[가-힣]{2}", t) or re.search(r"\([一-鿿]+\)", t):
+    # '인재(人'처럼 줄 끝에서 갈린 한자 병기의 앞부분도 본문
+    if (not re.search(r"[가-힣]{2}", t) or re.search(r"\([一-鿿]+(?:\)|$)", t)
+            or _HANJA_WORD_RE.match(t)):
         return t
     cls = "[一-鿿㐀-䶿々^■•*~`]" if keep_guil else "[一-鿿㐀-䶿々^■•*«»~`]"
+    # 한글 뒤에 괄호 없이 붙은 한자 2자↑('반야심경般若心經'·'묘산廟算')는 병기 — 뒤쪽은 떼지 않는다
+    if re.search(r"[가-힣][一-鿿]{2,}[^가-힣一-鿿]*$", t):
+        return re.sub(rf"^{cls}+", "", t)
     return re.sub(rf"^{cls}+|{cls}+$", "", t)
 
 
 def _clean_line(line: str) -> str:
     """잡음 줄이면 '', 본문 줄이면 섞인 잡음 토큰과 양끝 잡음을 뗀 줄."""
+    # 한문 인용 줄('學而時習之 不亦說乎')은 본문 — 한자 4자↑ 연속이고 한자·공백·문장부호만 있을 때
+    # (영문·숫자가 섞인 '秘密永近Wteil' 같은 그림 속 글자 오인식은 제외). 토큰 정리보다 먼저 봐야
+    # '夫,'·'也.多算勝,' 같은 한문 토큰이 잡음으로 떨어지지 않는다
+    if re.search(r"[一-鿿]{4,}", line) and all(
+            _HANJA_RE.match(c) or c.isspace() or c in ".,!?;:·()「」『』“”\"'" for c in line):
+        return line
     keep_guil = bool(_PAIRED_GUIL_RE.search(line))
     # 잡음 토큰과, 낱말 사이에 홀로 떨어진 따옴표 토큰("가, ' 무시당한다."의 "'")을 뗀다
     line = " ".join(_strip_token_edges(t, keep_guil) for t in line.split()
@@ -189,11 +212,6 @@ def _clean_line(line: str) -> str:
         return line
     if _low_word_quality(line):
         return _salvage(line)
-    # 한문 인용 줄('學而時習之 不亦說乎')은 본문 — 한자 4자↑ 연속이고 한자·공백·문장부호만 있을 때
-    # (영문·숫자가 섞인 '秘密永近Wteil' 같은 그림 속 글자 오인식은 제외)
-    if re.search(r"[一-鿿]{4,}", line) and all(
-            _HANJA_RE.match(c) or c.isspace() or c in ".,!?;:·()「」『』“”\"'" for c in line):
-        return line
     # 한글이 적은 짧은 줄: 한자가 섞였거나 한글 낱말·영단어(모음 포함 3자↑)가 없으면 잡음
     if not re.fullmatch(r"[\d\-.,:/()| ]+", line.strip()) and (
             (_HANJA_RE.search(line) and not re.search(r"[一-鿿]{4,}", line)
@@ -368,16 +386,18 @@ def _strip_header_spans(line: str, hg: set[str]) -> str:
     toks = line.split()
     sks = [_skel(t) for t in toks]
     line_sk = "".join(sks)
+    spans = [m.span() for m in re.finditer(r"\S+", line)]   # 어절의 줄 안 위치
     covered = [False] * len(line_sk)
     for p in range(len(line_sk) - _GRAM + 1):
         if line_sk[p:p + _GRAM] in hg:
             for q in range(p, p + _GRAM):
                 covered[q] = True
     hg3 = {g[p:p + 3] for g in hg for p in range(2) if re.fullmatch(r"[가-힣]{3}", g[p:p + 3])}
-    hdr, pos = [], 0
+    hdr, cov, pos = [], [], 0
     for sk in sks:
         c = sum(covered[pos:pos + len(sk)])
-        hdr.append(len(sk) >= 2 and c / len(sk) >= 0.6)
+        cov.append(c / len(sk) if sk else 0.0)
+        hdr.append(len(sk) >= 2 and cov[-1] >= 0.6)
         pos += len(sk)
     drop: set[int] = set()
     i = 0
@@ -388,7 +408,14 @@ def _strip_header_spans(line: str, hg: set[str]) -> str:
         j = i
         while j + 1 < len(toks) and (hdr[j + 1] or (not sks[j + 1] and j + 2 < len(toks) and hdr[j + 2])):
             j += 1
-        if sum(len(sks[k]) for k in range(i, j + 1) if hdr[k]) >= _HEADER_MIN_SPAN:
+        heads = [k for k in range(i, j + 1) if hdr[k]]
+        # 어절 하나뿐인 구간은 거의 다 덮일 때만 — 가장자리에 자주 오는 이름에 조사가 붙은 본문 낱말
+        # ('아이젠하워에게는'·'엘리자베스여왕이')을 머리글로 지우던 것(인문의숲 실측)
+        # 머리글 조각은 가장자리 줄 양끝 30자에서 배운 것 — 구간도 줄 양끝 30자 안에 걸칠 때만
+        # (긴 문단 가운데의 '실리콘밸리 천재들의 생각과' 같은 본문 구절 보호)
+        at_edge = spans[i][0] <= 30 or spans[j][1] >= len(line) - 30
+        if (at_edge and sum(len(sks[k]) for k in heads) >= _HEADER_MIN_SPAN
+                and (len(heads) > 1 or cov[heads[0]] >= 0.8)):
             # 바로 앞 어절이 더 심하게 깨진 머리글 조각('실리콘IB리')이면 함께 — 머리글 3글자 조각을 품을 때만
             if i > 0 and len(sks[i - 1]) >= 3 and any(sks[i - 1][p:p + 3] in hg3
                                                        for p in range(len(sks[i - 1]) - 2)):
@@ -461,10 +488,17 @@ def strip_fuzzy_headers(pages: list[str]) -> tuple[list[str], int]:
     out, n = [], n_part
     for p in pages:
         new = []
-        for l in p.splitlines():
+        lines = p.splitlines()
+        filled = [i for i, l in enumerate(lines) if l.strip()]
+        edges = set(filled[:2] + filled[-2:])
+        for i, l in enumerate(lines):
             s = _strip_header_spans(l, hg)
             if s != l and is_garbage_line(s):       # 머리글을 떼고 남은 자투리('1 期')
                 s = ""
+            # 머리글은 쪽 가장자리에 붙어 읽힌다 — 가운데 줄은 줄 전체가 머리글일 때만 지운다
+            # (본문 문장 일부를 지우던 것: '…효문제는 또 종실의 딸을…' 2천년의강의 실측)
+            if s and i not in edges:
+                s = l
             if s != l and DEBUG_LOG is not None:
                 DEBUG_LOG.append((l, s))
             if s != l:
@@ -480,7 +514,9 @@ def strip_fuzzy_headers(pages: list[str]) -> tuple[list[str], int]:
 # 켜고 처리): 판권(마지막 쪽)과 '차례' 제목 쪽 1장만 지워지고 표지·저자 소개·다른 책 광고·저작권 쪽·
 # 차례 이어지는 쪽이 그대로 남았다. 모양이 뚜렷한 것만 규칙으로 고른다 — 머리말·프롤로그는 본문.
 _FRONT_MAX_PAGES = 40
-_PRICE_AD_RE = re.compile(r"\d[\d,.]{3,6}\s*원")
+# 값 뒤에 한글이 이어지면 가격이 아니다 — '다부(…1770-1823) 원수가'의 '1823 원'을 광고로 보고 손자병법 본문
+# 쪽을 지웠다(감사 27번). 천 단위 쉼표 꼴('18,000원이 책이…'처럼 OCR 이 붙여 읽은 것)은 그대로 가격
+_PRICE_AD_RE = re.compile(r"\d{1,3}(?:,\d{3})+\s*원|\d[\d,.]{3,6}\s*원(?![가-힣])")
 # 도서 광고 문맥: '지음·옮김', '| 175면 |'·'384쪽' 같은 쪽수, '김남진 역 | 15,000원'·'이상혁 저 I' 처럼
 # 구분자가 뒤따르는 '저'·'역'. 대명사 '저'('저 역시')와 헷갈리지 않게 '저'·'역' 단독은 쓰지 않는다
 _PRICE_CTX_RE = re.compile(r"지음|옮김|저자|역자|\d\s*면\s*[|｜I]|\d{2,4}\s*쪽|(?<![가-힣])[저역]\s*[|｜I](?![A-Za-z])")

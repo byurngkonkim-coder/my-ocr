@@ -71,6 +71,19 @@ def test_page_texts_paragraph_break_on_indent_and_gap():
     assert text.split("\n") == ["첫 단락의 마지막 줄이다.", "", BODY, BODY, "", BODY]
 
 
+def test_page_texts_small_indent_and_sentence_wrap():
+    # 01 기준: 들여쓰기 0.4h(20px)도 문단 첫 줄 · 꽉 찬 줄이 마침표로 끝나고 다음 줄이 여백에 붙어 이어지면 같은 단락
+    ls = [_line("첫 문단 첫 줄이 오른쪽 끝까지 찬다", 280),
+          _line("둘째 줄도 꽉 차고 마침표로 끝난다.", 280 + PITCH),
+          _line("셋째 줄은 들여쓰기 없이 같은 문단이다", 280 + 2 * PITCH),
+          _line("마지막 줄.", 280 + 3 * PITCH, LEFT, 600),
+          _line("새 문단은 반 글자쯤 들여 쓴다", 280 + 4 * PITCH, LEFT + 22)]
+    text = bl.page_texts([{"w": W, "h": H, "lines": ls}])[0]
+    assert text.split("\n") == ["첫 문단 첫 줄이 오른쪽 끝까지 찬다",
+                                "둘째 줄도 꽉 차고 마침표로 끝난다. 셋째 줄은 들여쓰기 없이 같은 문단이다",
+                                "마지막 줄.", "", "새 문단은 반 글자쯤 들여 쓴다"]
+
+
 def test_page_texts_joins_dropcap():
     ls = [_line("현", 280, LEFT, LEFT + 110, 130), _line("실에 대한 기본 가정은", 290, LEFT + 120)]
     assert bl.page_texts([{"w": W, "h": H, "lines": ls}])[0] == "현실에 대한 기본 가정은"

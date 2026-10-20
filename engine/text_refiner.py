@@ -7,18 +7,25 @@ LLM(Gemini) 없이 동작하는 결정론 단계만 옮겨 왔다. 함수 본문
 - 문장 정제: 쪽번호·반복 머리글/꼬리말 제거, 쪽 안의 끊긴 줄 잇기, 쪽 경계에서 끊긴 문장 잇기
 - 부속물 삭제: 선두의 차례, 선두·말미의 판권(간기)·도서 광고 제거
   (표제지·헌사·약력처럼 형태가 뚜렷하지 않은 앞부속은 원본에서도 LLM이 처리 — 여기선 남는다)
-- OCR 잡음·단락 규칙(noise_rules.py): 01 의 core/noise_rules.py 를 바이트 그대로 복사(2026-10-16).
+- OCR 잡음·단락 규칙(noise_rules.py): 01 의 core/noise_rules.py 를 바이트 그대로 복사(2026-10-16, 재동기화 2026-10-20).
   01 '비용 우선(내장 정제규칙)' 경로와 같은 순서로 부른다 — 고칠 때는 01 원본을 고치고 다시 복사한다.
+- 줄바꿈·단락(2026-10-20, 01 의 10-17~10-19 수정 이식): 쪽 경계 표지로 쪽 경계 잇기(post_process_pagebreaks),
+  항목 줄(1. ② 가. 제1조)은 앞 줄에 잇지 않기, 낱말 중간에서 갈린 줄은 붙여 잇기(data/wrap_nospace.txt),
+  쪽 첫 줄 제목은 앞 문단에 잇지 않기, 단락 사이 빈 줄 하나로 통일(unify_paragraph_breaks).
 """
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from pathlib import Path
 
 import korean_corrector
 import noise_rules
 
 # 문장이 '깔끔히' 끝났는지 판단
 _SENT_END = re.compile(r'[.!?…。！？”’"\'\)\]》」』]\s*$')
+PAGEBREAK = "⟨PAGEBREAK⟩"
+_WRAP_TABLE = Path(__file__).resolve().parent / "data" / "wrap_nospace.txt"   # 01 core/data 와 같은 파일
 
 
 def refine_pages(pages: list[str], drop_matter: bool = False, structure=None) -> tuple[str, list[str]]:
@@ -43,8 +50,11 @@ def refine_pages(pages: list[str], drop_matter: bool = False, structure=None) ->
     # 출처 표기 명언집: 줄 잇기 전에 '명언 → 저자 출처' 그룹 경계를 고정(번호를 못 읽은 항목 포함)
     pages, _ = noise_rules.group_attributed_quotes(pages)
     pages = drop_noise_pages(pages, notes)
-    pages = [join_broken_lines(fix_hyphenated_words(p)) for p in pages]
-    text, _ = rejoin_split_sentences("\n\n".join(p for p in pages if p.strip()))
+    # 01 _rules_clean 과 같은 순서: 쪽을 경계 표지로 이어 쪽 경계에서 끊긴 문장·어절을 먼저 잇고, 그다음 줄 잇기.
+    # 예전엔 쪽을 빈 줄로만 이어 짧게 끊긴 문장('…결단을 반복' / 다음 쪽 '하고 있는 것은')이 단락으로 갈렸다
+    text = ("\n" + PAGEBREAK + "\n").join(fix_hyphenated_words(p) for p in pages if p.strip())
+    text = join_broken_lines(post_process_pagebreaks(text))
+    text, _ = rejoin_split_sentences(text)
     text = noise_rules.finish_groups(text)              # 그룹 경계 표지 → 빈 줄(줄 잇기가 끝난 뒤)
     text, _ = noise_rules.repair_quote_brackets(text)   # 인용 괄호 〈〉「」『』 짝 복원
     text, _ = noise_rules.split_language_lines(text)    # 한 줄에 붙은 한글·영어 문장 가르기
@@ -55,6 +65,7 @@ def refine_pages(pages: list[str], drop_matter: bool = False, structure=None) ->
     # 교정을 줄 잇기 뒤에 돌린다. OCR 줄 단위 교정은 줄 사이에서 끊긴 어절을 볼 수 없다.
     text = korean_corrector.fix_split_tokens(text, document_corpus=text)
     text = fix_punctuation_spacing(text)
+    text = unify_paragraph_breaks(text)                 # 단락 사이는 빈 줄 하나(C-08) — 01 과 같게
     # noise_rules 보고의 '원문 사본' 안내는 01 전용(MyOCR 는 사본을 남기지 않는다 — '문장 정제'를 끄면 원문)
     notes = [n.replace(" (정제 전 원문 사본에서 확인 가능)", "") for n in notes]
     return re.sub(r'\n{3,}', '\n\n', text).strip(), notes
@@ -156,15 +167,46 @@ _PARA_START = re.compile(r'^[가-힣A-Za-z0-9\"\'\(「『《]')
 # 줄이 오른쪽 끝까지 찼다고 볼 비율 — 쪽에서 흔한 줄 길이(중앙값)의 이만큼 이상이어야 다음 줄과 잇는다.
 # 정제본 23권 실측: 길이만 보면 제목('목표는 완전한 이해다')·표 행('국내 극장 4,928,000')을 본문에 붙였다
 _FULL_LINE_RATIO = 0.75
-_LIST_START_RE = re.compile(r'^[-–—•·*▶▷►>»※□■○●◆◇]')
+# 항목 시작(글머리 기호·일련번호·조항) — 이 줄은 앞 줄에 잇지 않는다. 쪽 경계 잇기도 같이 쓴다(01 postprocessor).
+# '1.5배'·'가나다'·'제3조에' 처럼 뒤에 공백·괄호가 없으면 항목 표시가 아니다.
+ITEM_START_RE = re.compile(
+    r'^(?:[-–—•·*▶▷►>»※□■○●◆◇▪◦☞➤✓]'
+    r'|\(?\d{1,3}[.．)]\s'                          # 1. 2) (3)
+    r'|[①-⑳㉠-㉭㈀-㈍]'                              # ① ㉠ ㈀
+    r'|제\s?\d{1,3}\s?[조장절항편부관](?:\s|\(|$))')   # 제1조 제2장
+# 한글 항목(가. 나) (다)) — 줄 끝에서 잘린 '…운용되었|다. 그러나' 와 모양이 같아,
+# 앞이나 뒤 글자도 다른 줄 머리에 항목으로 나올 때만 항목으로 본다(목록은 두 개 이상이다)
+_KO_ITEM_RE = re.compile(r'^\(?([가나다라마바사아자차카타파하])[.)]\s')
+_KO_SEQ = "가나다라마바사아자차카타파하"
+# 마지막 줄의 쪽 꼬리말('2장 결단 19') — 본문 줄에 붙지 않게
+_PAGE_FOOTER_LINE = re.compile(r'^(?:\d{1,3}\s*)?\d{1,2}\s?[장부]\s?\S.{0,35}?\s?\d{1,3}$|^\d{1,3}\s*\d{1,2}\s?[장부]\s?\S.{0,35}$')
+
+
+def item_letters(lines) -> frozenset[str]:
+    """줄 머리에 한글 항목 표시로 나온 글자들 — is_item_start 에 넘긴다."""
+    return frozenset(m[1] for l in lines if (m := _KO_ITEM_RE.match(l.lstrip())))
+
+
+def is_item_start(line: str, letters: frozenset[str] = frozenset()) -> bool:
+    """항목 시작 줄인가(글머리 기호·일련번호·조항·한글 항목)."""
+    s = line.lstrip()
+    if ITEM_START_RE.match(s):
+        return True
+    m = _KO_ITEM_RE.match(s)
+    if not m:
+        return False
+    k = _KO_SEQ.index(m[1])
+    return bool(letters & {_KO_SEQ[k - 1] if k else "", _KO_SEQ[k + 1] if k + 1 < len(_KO_SEQ) else ""})
 
 
 def join_broken_lines(text: str) -> str:
-    """같은 단락에 속하는 물리적 줄들을 공백으로 이어 붙인다.
-    오른쪽 끝까지 찬 줄(조판상 줄바꿈)만 잇고, 짧은 줄(제목·표 행)과 목록 항목 앞에서는 멈춘다."""
+    """같은 단락에 속하는 물리적 줄들을 이어 붙인다(01 postprocessor.join_broken_lines).
+    오른쪽 끝까지 찬 줄(조판상 줄바꿈)만 잇고, 짧은 줄(제목·표 행)과 항목 줄 앞에서는 멈춘다.
+    낱말 중간에서 갈린 자리('운용되었|다')는 붙이고 나머지는 띄운다(_join_wrapped)."""
     lines = text.splitlines()
     lens = sorted(len(l.strip()) for l in lines if l.strip())
     full = lens[len(lens) // 2] * _FULL_LINE_RATIO if lens else 0
+    letters = item_letters(lines)
     out: list[str] = []
     i = 0
     while i < len(lines):
@@ -178,15 +220,34 @@ def join_broken_lines(text: str) -> str:
             if not nxt.strip() or _MD_HEADING_RE.match(cur) or _MD_HEADING_RE.match(nxt):
                 break
             # 지금까지 이은 줄이 아니라 '현재 물리적 줄'(lines[i])이 끝까지 찼는지를 본다
-            if (len(lines[i].strip()) >= full and not _LIST_START_RE.match(nxt.strip())
+            last = not any(l.strip() for l in lines[i + 2:])
+            if (len(lines[i].strip()) >= full and not is_item_start(nxt, letters)
+                    and not (last and _PAGE_FOOTER_LINE.match(nxt.strip()))
                     and _should_join(cur, nxt)):
-                cur = cur.rstrip() + ' ' + nxt.lstrip()
+                cur = _join_wrapped(cur, nxt)
                 i += 1
             else:
                 break
         out.append(cur)
         i += 1
     return '\n'.join(out)
+
+
+@lru_cache(maxsize=1)
+def _wrap_nospace() -> frozenset[str]:
+    """붙여 잇는 한글 쌍 표. 파일이 없으면 빈 표(예전처럼 늘 띄운다)."""
+    try:
+        return frozenset(_WRAP_TABLE.read_text(encoding="utf-8").split())
+    except OSError:
+        return frozenset()
+
+
+def _join_wrapped(cur: str, nxt: str) -> str:
+    """줄바꿈으로 갈라진 두 줄을 잇는다 — 낱말 중간에서 잘린 자리('운용되었|다')면 붙이고, 아니면 띄운다."""
+    cur, nxt = cur.rstrip(), nxt.lstrip()
+    if cur and nxt and (cur[-1] + nxt[0]) in _wrap_nospace():
+        return cur + nxt
+    return cur + ' ' + nxt
 
 
 def _should_join(cur: str, nxt: str) -> bool:
@@ -277,6 +338,63 @@ def rejoin_split_sentences(text: str) -> tuple[str, int]:
         out.append(cur)
         i += 1
     return "\n".join(out), joined
+
+
+# ── 쪽 경계 잇기·단락 통일 (01 text_cleaner.post_process_pagebreaks · unify_paragraph_breaks) ─────────
+_HEADING_MAX = 25                     # 이보다 긴 쪽 첫 줄은 앞 쪽에서 이어지는 본문 줄로 본다
+_HEADING_TAIL_STRIP = '"\'”’)]」』》'
+
+
+def _is_heading_line(rest: str) -> bool:
+    """쪽 첫 줄이 제목·장 번호인가 — 짧고, 문장 끝(. ? ! … , 다 요 까)으로 끝나지 않고, 아래에 줄이 더 있다.
+    짧은 이음 줄('고 하는 데에는 다른이유가 있다.', '져나갈궁리를 한다')은 문장 끝으로 끝나 앞 쪽에 잇는다."""
+    first, _, more = rest.partition("\n")
+    tail = first.strip().rstrip(_HEADING_TAIL_STRIP)
+    return (0 < len(first.strip()) <= _HEADING_MAX and bool(tail) and tail[-1] not in ".!?。…,다요까"
+            and bool(more.strip()))
+
+
+def post_process_pagebreaks(text: str) -> str:
+    """⟨PAGEBREAK⟩ 경계에서 잘린 어절·문장을 잇고 표지를 지운다. 앞 쪽이 문장으로 끝났으면 단락 경계(빈 줄).
+    다음 쪽이 장·절 제목(MD)·항목(2. ② 나. 제2조)·제목 꼴 줄로 시작하면 잇지 않는다."""
+    if not text:
+        return ""
+    letters = item_letters(text.replace(PAGEBREAK, "\n").splitlines())
+
+    def _repl(match):
+        before, ws_before, ws_after, after = match.groups()
+        line_start = match.string.rfind("\n", 0, match.start()) + 1
+        if re.fullmatch(r'#{1,6}', after) or _MD_HEADING_RE.match(match.string[line_start:match.end(1)]):
+            return before + "\n\n" + after
+        if "\n" in ws_before + ws_after and is_item_start(match.string[match.start(4):], letters):
+            return before + "\n" + after
+        if "\n" in ws_before + ws_after and (ws_after.endswith("  ")
+                                             or _is_heading_line(match.string[match.start(4):])):
+            return before + "\n\n" + after
+        if _SENT_END.search(before):
+            return before + ("\n\n" if "\n" in ws_before + ws_after else " ") + after
+        return before + _glue(before, after) + after
+
+    processed = re.sub(r'(\S+)(\s*)⟨PAGEBREAK⟩(\s*)(\S+)', _repl, text)
+    return processed.replace(PAGEBREAK, "")
+
+
+# 앞 줄에 붙여 두는 줄 — 명언 저자 줄('- 벤저민 프랭클린…')·글머리 목록
+_ATTACHED_LINE = re.compile(r"[-•·▶■□○●◆※]\s")
+
+
+def unify_paragraph_breaks(text: str) -> str:
+    """단락 사이를 빈 줄 하나로 통일한다(C-08 '단락 = 빈 줄'). 줄 잇기가 끝난 뒤 남은 줄바꿈은 단락 경계인데
+    쪽 안에서는 줄바꿈 하나·쪽 경계에서는 빈 줄로 섞여 있었다(MyOCR 1분의사결정: 빈 줄 129·줄바꿈 하나 1,089).
+    글머리(- •)로 시작하는 줄은 앞 줄과 한 덩어리로 둔다 — 명언과 저자 줄이 갈라지지 않게."""
+    out: list[str] = []
+    for line in (l.strip() for l in text.split("\n")):
+        if not line:
+            continue
+        if out:
+            out.append("\n" if _ATTACHED_LINE.match(line) else "\n\n")
+        out.append(line)
+    return "".join(out)
 
 
 # ── 러닝헤더 제거 (text_cleaner.strip_running_headers) ──────────────────────────
