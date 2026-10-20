@@ -1,4 +1,4 @@
-"""book_layout 테스트 — 여백 제거·단락 경계·차례 추출·제목 정비·MD/TXT 출력.
+"""book_layout·toc_headings 테스트 — 여백 제거·단락 경계·차례 추출·제목 정비·MD/TXT 출력.
 쪽 모양은 21세기지식경영 스캔(2334px 높이) 실측 좌표를 줄여 만든 합성 쪽이다."""
 import sys
 from pathlib import Path
@@ -8,6 +8,7 @@ if str(_ENGINE) not in sys.path:
     sys.path.insert(0, str(_ENGINE))
 
 import book_layout as bl
+import toc_headings as th
 
 W, H, LH, PITCH, LEFT, RIGHT = 1650, 2334, 50, 70, 260, 1340
 BODY = "현실에 대한 기본 가정은 경영과 같은 사회과학의 패러다임을 형성하며 학자와 실무자의"
@@ -117,7 +118,7 @@ def test_mark_headings_multiline_window_and_inferred_chapter():
     pages[34] = "1.경영은 기업경영이다\n" + BODY
     pages[40] = "2.단 하나의 올바른 조직\n" + BODY
     stats = {}
-    out = bl.mark_headings(pages, entries, [], stats)
+    out = th.mark_headings(pages, entries, [], stats)
     assert stats["found"] == 3 and stats["inferred"] == 1 and stats["missing"] == []
     assert out[17].split("\n")[:3] == ["", "# 저자의 말:내일의 핵심문제", ""]
     assert out[29].startswith("1.경영은 기업경영이다\n")
@@ -126,20 +127,20 @@ def test_mark_headings_multiline_window_and_inferred_chapter():
 
 
 def test_mark_headings_clears_toc_pages():
-    out = bl.mark_headings(["차례 쪽", "본문"], [{"level": 1, "title": "본문 제목", "page": None}], [0], {})
+    out = th.mark_headings(["차례 쪽", "본문"], [{"level": 1, "title": "본문 제목", "page": None}], [0], {})
     assert out[0] == ""
 
 
 def test_output_md_and_txt():
     entries = [{"level": 1, "title": "제1장 시작", "page": None}, {"level": 2, "title": "1.첫 절", "page": 3}]
-    body = bl.space_headings("# 제1장 시작\n## 1.첫 절\n본문 문장이다.\n#태그 는 제목이 아니다")
+    body = th.space_headings("# 제1장 시작\n## 1.첫 절\n본문 문장이다.\n#태그 는 제목이 아니다")
     assert body == "# 제1장 시작\n\n## 1.첫 절\n\n본문 문장이다.\n#태그 는 제목이 아니다"
-    md = bl.to_markdown(body, entries)
+    md = th.to_markdown(body, entries)
     assert md.startswith("# 차례\n\n- 제1장 시작\n  - 1.첫 절\n\n# 제1장 시작")
-    txt = bl.to_text(body, entries)
+    txt = th.to_text(body, entries)
     assert txt.startswith("차례\n\n제1장 시작\n  1.첫 절\n\n제1장 시작\n\n1.첫 절\n\n본문 문장이다.")
     assert "#" in txt.split("\n")[-1]          # 본문의 '#태그' 는 그대로
-    assert bl.to_markdown("본문", []) == "본문" and bl.to_text("본문", []) == "본문"
+    assert th.to_markdown("본문", []) == "본문" and th.to_text("본문", []) == "본문"
 
 
 def test_refine_pdf_pages_end_to_end():
@@ -162,6 +163,41 @@ def test_refine_pdf_pages_end_to_end():
 def test_refine_pdf_pages_without_toc_reports():
     md, txt, notes = bl.refine_pdf_pages([_body_page(i) for i in range(5)])
     assert md == txt and "차례를 찾지 못해" in notes[0]
+
+
+def test_rows_from_text_attaches_split_page_numbers():
+    # 01_OCR 정제 경로 — 줄 좌표 없이 쪽 글만 있다. 따로 읽힌 쪽번호 줄을 제목에 붙인다
+    rows = th.rows_from_text("차 례\n1.경영은 기업경영이다\n32\n2.단 하나의 올바른 조직 38\n41\n3.사람을 다루는 방법")
+    assert [t for t, _ in rows] == ["차 례", "1.경영은 기업경영이다 32", "2.단 하나의 올바른 조직 38",
+                                    "3.사람을 다루는 방법 41"]
+
+
+def test_extract_toc_text():
+    toc = ("차례\n·역자의말/3\n제1장 새로운 경영 패러다임\n제1장에들어가면서 27\n1.경영은 기업경영이다\n32\n"
+           "2.단 하나의 올바른 조직 38\n제2장 전략\n1.감소하는 출산율 96\n·감사의말/341")
+    entries, toc_pages = th.extract_toc_text(["표지", toc] + ["본문 문장이다."] * 30)
+    assert toc_pages == [1]
+    assert [(e["level"], e["title"], e["page"]) for e in entries] == [
+        (1, "역자의말", 3), (1, "제1장 새로운 경영 패러다임", None), (2, "제1장에들어가면서", 27),
+        (2, "1.경영은 기업경영이다", 32), (2, "2.단 하나의 올바른 조직", 38), (1, "제2장 전략", None),
+        (2, "1.감소하는 출산율", 96), (1, "감사의말", 341)]
+
+
+def test_extract_toc_skips_placeholders_and_marking_skips_toc_rows():
+    # 01_OCR 보관 원문 실측: 그림 자리 표시가 차례 항목이 됐고, 차례로 못 알아본 차례 쪽 행('노동' / '193')에 제목이 붙었다
+    toc = "차례\n[그림 1: 이미지 감지됨]\n── 비텍스트 영역 ──\n1.노동 7\n2.다스림 9\n3.리더십 11\n4.회개 13\n5.회심 15"
+    entries, _ = th.extract_toc_text(["표지", toc] + ["본문 문장이다."] * 30)
+    assert [e["title"] for e in entries] == ["1.노동", "2.다스림", "3.리더십", "4.회개", "5.회심"]
+    pages = ["노동\n\n193\n다스림\n202", "본문\n노동\n일은 기쁨이다."]
+    out = th.mark_headings(pages, [{"level": 1, "title": "노동", "page": None}], [], {})
+    assert out[0].startswith("노동") and "\n# 노동\n" in out[1]
+
+
+def test_marking_skips_running_header_with_page_number():
+    # 쪽번호가 붙은 줄은 머리글('I . 자신의 길을 찾는다 17') — 1분의사결정 텍스트층 PDF
+    pages = ["I . 자신의 길을 찾는다 17\n본문", "I. 자신의 길을 찾는다\n본문"]
+    out = th.mark_headings(pages, [{"level": 1, "title": "I. 자신의 길을 찾는다", "page": None}], [], {})
+    assert out[0].startswith("I . 자신의") and "# I. 자신의 길을 찾는다" in out[1]
 
 
 if __name__ == "__main__":

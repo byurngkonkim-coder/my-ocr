@@ -138,6 +138,7 @@ MyOCR/
 │   ├── korean_corrector.py # 한글 맞춤법/띄어쓰기 정제 모듈
 │   ├── text_refiner.py     # 문장 정제·부속물 삭제 (일반 텍스트 모드)
 │   ├── book_layout.py      # 책 구조 정비 (여백 제거 → 차례 기준 장·절 → MD/TXT)
+│   ├── toc_headings.py     # 차례 추출·장·절 MD 제목 정비 (01_OCR 과 같은 파일)
 │   ├── batch_folder.py     # 폴더 일괄 처리 CLI
 │   ├── batch.py            # 일괄 처리 모듈 (헤더 병합)
 │   ├── exporters.py        # 엑셀/CSV/TSV 저장 모듈
@@ -177,5 +178,8 @@ MyOCR/
 - OCR 엔진: [RapidOCR](https://github.com/RapidAI/RapidOCR) · [RapidTable](https://github.com/RapidAI/RapidTable) (ONNX Runtime, Apache-2.0)
   — 한글 인식 모델 `korean_PP-OCRv5_mobile_rec`. 본문·표·고정양식 모두 이 엔진 하나만 씁니다
   (예전 PaddleOCR 예비 엔진은 2026-10-13 제거).
+- 차례 정비 모듈 `toc_headings.py` 는 `01_OCR_스캔파일텍스트추출프로그램\engine\core\toc_headings.py` 와 같은 파일입니다
+  (01 의 `START_OCR.bat` 정제에도 같은 규칙이 적용됨). 고칠 때는 두 곳을 함께 맞추세요 — 01 테스트
+  `test_toc_headings.py::test_shared_module_identical_to_myocr` 가 내용이 다르면 실패합니다.
 - 한글 교정기 `korean_corrector.py` 는 `01_OCR_스캔파일텍스트추출프로그램`·`파일형식변환기_MD` 와 같은 파일입니다.
   고칠 때는 세 곳과 각 저장소의 교정기 회귀 테스트를 함께 맞춰 주세요(2026-10-16 기준 세 곳이 같은 내용).
