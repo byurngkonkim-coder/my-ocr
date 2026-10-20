@@ -193,6 +193,14 @@ def test_extract_toc_skips_placeholders_and_marking_skips_toc_rows():
     assert out[0].startswith("노동") and "\n# 노동\n" in out[1]
 
 
+def test_toc_page_keeps_sentences_only():
+    # 차례 쪽에 실린 명언 문장은 본문으로 남기고 차례 항목은 뺀다(실리콘밸리천재들의생각 실측)
+    entries = [{"level": 2, "title": "4.여러 가지 선택 가능한 방법에 대해 안다", "page": 53}]
+    page = ("차례\n제11장 구글 전 CEO 에릭 슈미트 154\n4.여러 가지 선택 가능한 방법에 대해 안다\n"
+            "나는 항상 30일 뒤 파산할 것이라고 생각하며 사업을 한다.")
+    assert th.toc_page_leftover(page, entries) == "나는 항상 30일 뒤 파산할 것이라고 생각하며 사업을 한다."
+
+
 def test_marking_skips_running_header_with_page_number():
     # 쪽번호가 붙은 줄은 머리글('I . 자신의 길을 찾는다 17') — 1분의사결정 텍스트층 PDF
     pages = ["I . 자신의 길을 찾는다 17\n본문", "I. 자신의 길을 찾는다\n본문"]

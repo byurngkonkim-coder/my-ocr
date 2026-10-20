@@ -201,11 +201,29 @@ _PAGE_SLACK_FAR = 8          # 근처에 없을 때 다시 찾는 앞쪽 한계
 _MAX_JOIN = 3                # 본문에서 제목이 이만큼 줄로 나뉘어 있어도 찾는다('저자의 말' / '내일의 핵심문제')
 
 
+_SENTENCE_LINE_RE = re.compile(r'[다요죠까][.!?]?["”’)」]*\s*$|[.!?]["”’)」]*\s*$')
+
+
+def toc_page_leftover(page: str, entries: list[dict]) -> str:
+    """차례 쪽을 본문에서 뺄 때 남길 줄 — 차례 쪽에 함께 실린 문장(장마다 붙은 명언 '나는 항상 30일 뒤 파산할
+    것이라고 생각하며 사업을 한다.', 실리콘밸리천재들의생각 실측). 쪽번호로 끝나는 줄·짧은 줄·번호표로 시작하는 줄·
+    차례 항목과 같은 줄('4. 여러 가지 … 안다')은 차례다."""
+    titles = [_norm(e["title"]) for e in entries]
+
+    def is_entry(line: str) -> bool:
+        n = _norm(line)
+        return any(t and (t in n or n in t or SequenceMatcher(None, n, t).ratio() >= _MATCH_MIN) for t in titles)
+    keep = [l for l in page.split("\n")
+            if len(l.strip()) >= 15 and _SENTENCE_LINE_RE.search(l) and not _TOC_ROW_RE.match(l.strip())
+            and _level_kind(l) is None and not _LABEL_RE.match(l) and not is_entry(l)]
+    return "\n".join(keep)
+
+
 def mark_headings(pages: list[str], entries: list[dict], toc_pages: list[int], stats: dict) -> list[str]:
     """차례 쪽을 비우고, 본문에서 차례 제목과 같은 줄(연이은 짧은 줄 묶음 포함)을 차례 순서대로 찾아
     '#'×단계 제목으로 바꾼다. 못 찾은 장(부) 제목은 그 아래 항목을 찾았으면 그 앞에 넣는다.
     stats 에 found·inferred·missing 을 채운다."""
-    pages = ["" if i in set(toc_pages) else p for i, p in enumerate(pages)]
+    pages = [toc_page_leftover(p, entries) if i in set(toc_pages) else p for i, p in enumerate(pages)]
     flat = [(pi, li, l) for pi, p in enumerate(pages) for li, l in enumerate(p.split("\n"))]
     norms_all = [_norm(l) for _, _, l in flat]
     norms_han = [_norm_hangul(l) for _, _, l in flat]
