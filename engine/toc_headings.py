@@ -149,7 +149,12 @@ def extract_toc_rows(rows_by_page: list[list[tuple[str, float]]]) -> tuple[list[
     # 다음 줄이 '(' 로 시작할 때만('4.여러 가지 … 안다' / '(금요일 저녁)·53') — 장 제목 뒤 '제1장에 들어가면서 27' 은 따로
     merged: list[list] = []
     for title, no, bullet in raw:
-        if (merged and merged[-1][1] is None and no is not None and _level_kind(title) is None
+        # 번호표만 따로 읽힌 장('제1장' / '다음사회의모습 28')은 한 항목 — 따로 두면 제목이 장 아래 단계가 된다(NextSociety)
+        if merged and CHAPTER_LABEL_RE.match(merged[-1][0]) and _level_kind(title) is None:
+            merged[-1][0] += " " + title
+            if merged[-1][1] is None:
+                merged[-1][1] = no
+        elif (merged and merged[-1][1] is None and no is not None and _level_kind(title) is None
                 and (_level_kind(merged[-1][0]) is None or title.startswith("("))):
             merged[-1][0] += " " + title
             merged[-1][1] = no
